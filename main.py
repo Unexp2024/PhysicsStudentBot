@@ -4,8 +4,8 @@ from flask import Flask
 from cerebras.cloud.sdk import Cerebras
 
 # ====== НАСТРОЙКИ ======
-BOT_TOKEN = "ТВОЙ_ТОКЕН_СЮДА"
-CEREBRAS_API_KEY = "ТВОЙ_API_KEY_СЮДА"
+BOT_TOKEN = "8761525368:AAH8_n-0yqnzUWGYbCMNWjQnBMTPRGpvHyA"
+CEREBRAS_API_KEY = "csk-xwhxpc4dc3p3ved43e9xwppph32h8ek5n8feeh8jymhjjjt3"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
