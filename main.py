@@ -1,19 +1,15 @@
 import os
 import telebot
-from flask import Flask, request, jsonify
+from flask import Flask
 from cerebras.cloud.sdk import Cerebras
 import threading
+import time
 
 # =====================
 # ENV
 # =====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
-
-if not BOT_TOKEN:
-    raise ValueError("Нет BOT_TOKEN")
-if not CEREBRAS_API_KEY:
-    raise ValueError("Нет CEREBRAS_API_KEY")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 client = Cerebras(api_key=CEREBRAS_API_KEY)
@@ -98,64 +94,59 @@ def generate_response(user_id, text):
 
 
 # =====================
-# BACKGROUND WORKER
+# TELEGRAM HANDLERS
 # =====================
-def process_message(chat_id, text):
+@bot.message_handler(commands=['start', 'reset'])
+def start_handler(message):
+    user_id = message.chat.id
+    user_chats[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    bot.send_message(user_id, "Начинаю сессию...")
+
+    response = generate_response(user_id, "Начни сессию")
+    bot.send_message(user_id, response)
+
+
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    user_id = message.chat.id
+    text = message.text
+
     try:
-        print("=== НАЧАЛО ОБРАБОТКИ ===")
-        print("chat_id:", chat_id)
-        print("text:", text)
-
-        response = generate_response(chat_id, text)
-
-        print("ОТВЕТ ОТ AI:", response)
-
-        bot.send_message(chat_id, response)
-
-        print("СООБЩЕНИЕ ОТПРАВЛЕНО")
-
+        response = generate_response(user_id, text)
+        bot.send_message(user_id, response)
     except Exception as e:
-        print("!!! ОШИБКА В THREAD !!!")
-        print(str(e))
+        print("Ошибка:", e)
+        bot.send_message(user_id, "Ошибка генерации ответа")
+
 
 # =====================
-# WEBHOOK
+# POLLING (в отдельном потоке)
 # =====================
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    data = request.get_json(force=True)
-
-    print("POST пришёл")
-
-    if "message" in data:
-        message = data["message"]
-        chat_id = message["chat"]["id"]
-        text = message.get("text", "")
-
-        threading.Thread(
-            target=process_message,
-            args=(chat_id, text)
-        ).start()
-
-    return jsonify({"ok": True})
+def run_bot():
+    print("=== BOT STARTED (polling) ===")
+    while True:
+        try:
+            bot.infinity_polling(timeout=60, long_polling_timeout=60)
+        except Exception as e:
+            print("Polling error:", e)
+            time.sleep(5)
 
 
-@app.route("/", methods=["GET"])
-def index():
+threading.Thread(target=run_bot).start()
+
+
+# =====================
+# FAKE WEB SERVER (для Render)
+# =====================
+@app.route("/")
+def home():
     return "Bot is running", 200
+
+
 @app.route("/health")
 def health():
     return "ok", 200
 
-# =====================
-# WEBHOOK SETUP
-# =====================
-WEBHOOK_URL = f"https://physicsstudentbot.onrender.com/{BOT_TOKEN}"
 
-try:
-    bot.remove_webhook()
-    bot.set_webhook(WEBHOOK_URL)
-    print("Webhook установлен:", WEBHOOK_URL)
-except Exception as e:
-    print("Ошибка webhook:", e)
 print("=== APP STARTED ===")
