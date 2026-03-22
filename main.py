@@ -134,16 +134,19 @@ def handle(message):
 # =========================
 # WEBHOOK
 # =========================
+from flask import Flask, request
+import os
+import telebot
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+bot = telebot.TeleBot(BOT_TOKEN)
+
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     json_str = request.get_data().decode("UTF-8")
     update = telebot.types.Update.de_json(json_str)
     bot.process_new_updates([update])
     return "OK", 200
-
-@app.route("/")
-def index():
-    return "Bot is running", 200
 
 # =========================
 # START
