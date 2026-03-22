@@ -1,15 +1,15 @@
-import os
-import threading
-from flask import Flask
 import telebot
 import random
+import os
 
-# ===== Настройки бота =====
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ===== Настройки школьника =====
-CLASSES = {
+# Состояние пользователя
+user_state = {}
+
+# Темы по классам
+topics_by_grade = {
     7: ["сила тяжести", "механическое движение", "скорость", "плотность", "давление"],
     8: ["теплопроводность", "работа и мощность", "простые механизмы", "энергия"],
     9: ["законы Ньютона", "движение", "импульс", "архимедова сила", "ток"],
@@ -17,69 +17,70 @@ CLASSES = {
     11: ["термодинамика", "молекулярно-кинетическая теория", "электрическое поле", "магнитное поле", "колебания"]
 }
 
-# Хранение состояния сессии: {chat_id: {"step": 1, "cls": 9, "topic": "...", "a": ..., "b": ..., "current_error": 2}}
-sessions = {}
-
-def generate_task(chat_id):
-    cls = random.randint(7, 11)
-    topic = random.choice(CLASSES[cls])
-    a = random.randint(10, 200)
-    b = random.randint(1, 20)
-    wrong_result = f"{a + b*2} (думаю это правильно, но может ошибаюсь)"
-    sessions[chat_id] = {"step": 1, "cls": cls, "topic": topic, "a": a, "b": b, "current_error": 2}
-    return f"Учитель! Что-то я плохо понял тему {topic}. Давайте я попробую решить задачу по ней: " \
-           f"Если есть параметры {a} и {b}, то мой ответ: {wrong_result}. Я правильно решил?"
-
-def process_teacher_response(chat_id, message):
-    session = sessions.get(chat_id)
-    if not session:
-        return "Пожалуйста, сначала используйте /start для новой задачи."
+def generate_task():
+    # Выбираем случайный класс
+    grade = random.randint(7, 11)
+    topic = random.choice(topics_by_grade[grade])
     
-    step = session["step"]
-    a, b = session["a"], session["b"]
-    topic = session["topic"]
-    errors = session["current_error"]
-    
-    # Оценка объяснения: короткое = плохое, длинное = хорошее
-    if len(message.text.split()) <= 5:
-        response = f"Я всё ещё не понял, можете объяснить подробнее?"
-        # Ошибки не меняются
+    # Придумываем задачу: минимум 2 числовых параметра
+    a = random.randint(2, 20)
+    b = random.randint(10, 200)
+    if topic in ["скорость", "механическое движение", "движение", "движение по окружности"]:
+        task = f"Машина проезжает {b} км за {a} часов. Какова её скорость?"
+        solution = f"Я думаю, скорость равна {b*a} км/ч"  # ошибочное решение
+    elif topic in ["сила тяжести", "энергия", "работа и мощность", "ток"]:
+        task = f"Объект массой {a} кг поднимают на высоту {b} м. Какова потенциальная энергия?"
+        solution = f"Я думаю, энергия равна {a+b} Дж"  # ошибочное решение
     else:
-        # Исправляем часть ошибки, но оставляем новую
-        errors = max(0, errors - 1)
-        session["current_error"] = errors
-        if errors == 0:
-            response = f"Теперь я почти понял! Мой новый ответ: {a + b}. Думаю, это правильно?"
-        else:
-            wrong_result = f"{a + b + errors} (я немного исправил, но всё ещё не уверен)"
-            response = f"Я попробовал исправить: {wrong_result}. А можете объяснить ещё?"
-    
-    session["step"] += 1
-    return response
+        task = f"На плоскости находится объект. {a} N силы действуют на него в течение {b} секунд. Что произойдет?"
+        solution = f"Я думаю, объект будет двигаться со скоростью {a+b} м/с"  # ошибочное решение
+    return task, solution, topic, grade
 
-# ===== Обработчик сообщений =====
-@bot.message_handler(func=lambda message: True)
+# Начало диалога
+@bot.message_handler(commands=['start'])
+def handle_start(message):
+    task, solution, topic, grade = generate_task()
+    user_state[message.chat.id] = {
+        "task": task,
+        "solution": solution,
+        "topic": topic,
+        "grade": grade,
+        "step": 1
+    }
+    bot.send_message(
+        message.chat.id,
+        f"Учитель! Что-то я плохо понял тему {topic}. Я попытался решить задачу: {task} "
+        f"Вот моё решение: {solution} Я правильно решил?"
+    )
+
+# Ответы пользователя
+@bot.message_handler(func=lambda m: True)
 def handle_message(message):
-    text = message.text.lower()
-    chat_id = message.chat.id
-    if text == "/start":
-        bot.reply_to(message, generate_task(chat_id))
+    state = user_state.get(message.chat.id)
+    if not state:
+        bot.send_message(message.chat.id, "Напишите /start чтобы начать.")
+        return
+    
+    step = state["step"]
+    
+    # Алгоритм исправлений ошибок по шагам
+    if step == 1:
+        bot.send_message(message.chat.id, "А можете объяснить это на простом примере из жизни?")
+        state["step"] += 1
+    elif step == 2:
+        bot.send_message(message.chat.id,
+                         "Я попробовал исправить часть ошибки, но, кажется, я снова что-то напутал...")
+        state["step"] += 1
+    elif step == 3:
+        bot.send_message(message.chat.id,
+                         "Теперь почти правильно, но я всё ещё не уверен в одном моменте...")
+        state["step"] += 1
     else:
-        bot.reply_to(message, process_teacher_response(chat_id, message))
+        bot.send_message(message.chat.id,
+                         "Похоже, я наконец понял! Спасибо за помощь, учитель.")
+        del user_state[message.chat.id]
 
-# ===== Функция запуска polling =====
-def run_bot():
-    bot.remove_webhook()
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
-
-# ===== Flask сервер для Render =====
-app = Flask(__name__)
-
-@app.route("/health")
-def health():
-    return "OK", 200
-
+# Запуск
 if __name__ == "__main__":
-    threading.Thread(target=run_bot).start()
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    print("Бот запущен (polling)")
+    bot.infinity_polling()
