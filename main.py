@@ -1,23 +1,22 @@
 import os
-import time
-import threading
 import telebot
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from cerebras.cloud.sdk import Cerebras
 
-# ====== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ======
-BOT_TOKEN = os.environ.get("BOT_TOKEN")            # токен Telegram
-CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")  # API Cerebras
+# =====================
+# ==== Переменные ====
+# =====================
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
+RENDER_EXTERNAL_PORT = os.environ.get("PORT", 10000)
 
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is not set")
+    raise ValueError("Не задан BOT_TOKEN")
 if not CEREBRAS_API_KEY:
-    raise ValueError("CEREBRAS_API_KEY environment variable is not set")
+    raise ValueError("Не задан CEREBRAS_API_KEY")
 
-# ====== ИНИЦИАЛИЗАЦИЯ ======
 bot = telebot.TeleBot(BOT_TOKEN)
 client = Cerebras(api_key=CEREBRAS_API_KEY)
-app = Flask(__name__)
 
 SYSTEM_PROMPT = """
 Ты — симулятор школьника для студентов-педагогов. Студент-педагог тренируется объяснять материал.
@@ -71,14 +70,17 @@ SYSTEM_PROMPT = """
 - Обращаться на "ты" (используйте "Вы").
 """
 
-# ====== ХРАНИЛИЩЕ ЧАТОВ ======
+# ==========================
+# ==== Хранилище чатов ====
+# ==========================
 user_chats = {}
 
+# =====================================
+# ==== Функция генерации ответа AI ====
+# =====================================
 def generate_response(user_id, user_message=None):
-    """Функция общения с Cerebras API"""
     if user_id not in user_chats:
         user_chats[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-
     if user_message:
         user_chats[user_id].append({"role": "user", "content": user_message})
 
@@ -100,39 +102,39 @@ def generate_response(user_id, user_message=None):
     except Exception as e:
         return f"Ошибка API: {e}"
 
-# ====== ОБРАБОТЧИКИ TELEGRAM ======
-@bot.message_handler(commands=['start', 'reset'])
-def send_welcome(message):
-    user_id = message.chat.id
-    user_chats[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-    bot.reply_to(message, "Сбрасываю память... Генерирую новую задачу для тренировки.")
-    user_chats[user_id].append({"role": "user", "content": "Начни сессию. Напиши задачу и твое неправильное решение, как указано в инструкции."})
-    response = generate_response(user_id)
-    bot.reply_to(message, response)
+# ==========================
+# ==== Flask-сервер =======
+# ==========================
+app = Flask(__name__)
 
-@bot.message_handler(func=lambda message: True)
-def echo_all(message):
-    user_id = message.chat.id
-    response = generate_response(user_id, message.text)
-    bot.reply_to(message, response)
-
-# ====== WEBHOOK ======
-# Telegram шлёт POST на /BOT_TOKEN
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    json_str = request.get_data().decode("UTF-8")
-    update = telebot.types.Update.de_json(json_str)
-    print(f"Получен POST: {update}")  # можно смотреть в логах Render
-    bot.process_new_updates([update])
-    return "OK", 200
-
-@app.route("/")
+@app.route("/", methods=["GET"])
 def index():
     return "Bot is running", 200
 
-# ====== ЗАПУСК ======
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    # запускаем Flask (Render требует bind на $PORT)
-    app.run(host="0.0.0.0", port=port)
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    data = request.get_json(force=True)
+    print("Получен POST:", data)
+
+    if "message" in data:
+        message = data["message"]
+        chat_id = message["chat"]["id"]
+        text = message.get("text")
+        if text:
+            response_text = generate_response(chat_id, text)
+            bot.send_message(chat_id, response_text)
+    return jsonify({"status": "ok"}), 200
+
+# ==========================
+# ==== Установка webhook ===
+# ==========================
+WEBHOOK_URL = f"https://physicsstudentbot.onrender.com/{BOT_TOKEN}"
+bot.remove_webhook()
+bot.set_webhook(WEBHOOK_URL)
 print("Webhook установлен")
+
+# ==========================
+# ==== Запуск сервера ======
+# ==========================
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(RENDER_EXTERNAL_PORT))
