@@ -4,8 +4,16 @@ from flask import Flask, request, jsonify
 from cerebras.cloud.sdk import Cerebras
 import threading
 
+# =====================
+# ENV
+# =====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
+
+if not BOT_TOKEN:
+    raise ValueError("Нет BOT_TOKEN")
+if not CEREBRAS_API_KEY:
+    raise ValueError("Нет CEREBRAS_API_KEY")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 client = Cerebras(api_key=CEREBRAS_API_KEY)
@@ -68,6 +76,9 @@ SYSTEM_PROMPT = """
 
 user_chats = {}
 
+# =====================
+# AI
+# =====================
 def generate_response(user_id, text):
     if user_id not in user_chats:
         user_chats[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -86,12 +97,12 @@ def generate_response(user_id, text):
     return answer
 
 
-# ==========================
-# ВАЖНО: обработка в фоне
-# ==========================
+# =====================
+# BACKGROUND WORKER
+# =====================
 def process_message(chat_id, text):
     try:
-        print("Обработка сообщения:", text)
+        print("Новое сообщение:", text)
 
         response = generate_response(chat_id, text)
 
@@ -99,39 +110,38 @@ def process_message(chat_id, text):
 
     except Exception as e:
         print("Ошибка:", e)
-        bot.send_message(chat_id, "Ошибка генерации ответа")
 
 
-# ==========================
-# Webhook
-# ==========================
+# =====================
+# WEBHOOK
+# =====================
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    data = request.get_json()
+    data = request.get_json(force=True)
+
+    print("POST пришёл")
 
     if "message" in data:
         message = data["message"]
         chat_id = message["chat"]["id"]
         text = message.get("text", "")
 
-        # 🚀 Запуск в отдельном потоке
         threading.Thread(
             target=process_message,
             args=(chat_id, text)
         ).start()
 
-    # ⚡ МГНОВЕННЫЙ ответ Telegram
     return jsonify({"ok": True})
 
 
 @app.route("/", methods=["GET"])
 def index():
-    return "Bot is running"
+    return "Bot is running", 200
 
 
-# ==========================
-# Установка webhook
-# ==========================
+# =====================
+# WEBHOOK SETUP
+# =====================
 WEBHOOK_URL = f"https://physicsstudentbot.onrender.com/{BOT_TOKEN}"
 
 try:
@@ -140,11 +150,3 @@ try:
     print("Webhook установлен:", WEBHOOK_URL)
 except Exception as e:
     print("Ошибка webhook:", e)
-
-
-# ==========================
-# Запуск
-# ==========================
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
