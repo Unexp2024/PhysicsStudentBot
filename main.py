@@ -1,20 +1,16 @@
-import os
 import telebot
+import threading
 from flask import Flask
 from cerebras.cloud.sdk import Cerebras
-import threading
-import time
 
-# =====================
-# ENV
-# =====================
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
+# ====== НАСТРОЙКИ ======
+BOT_TOKEN = "ТВОЙ_ТОКЕН_СЮДА"
+CEREBRAS_API_KEY = "ТВОЙ_API_KEY_СЮДА"
 
 bot = telebot.TeleBot(BOT_TOKEN)
-client = Cerebras(api_key=CEREBRAS_API_KEY)
-
 app = Flask(__name__)
+
+client = Cerebras(api_key=CEREBRAS_API_KEY)
 
 SYSTEM_PROMPT = """
 Ты — симулятор школьника для студентов-педагогов. Студент-педагог тренируется объяснять материал.
@@ -70,83 +66,44 @@ SYSTEM_PROMPT = """
 - Отправлять пользователю какой-либо текст до того как ты сгенерировал "Учитель! Что-то я плохо понял тему [ТЕМА]. Давайте я попробую решить задачу по ней: [ЗАДАЧА + НЕПРАВИЛЬНОЕ РЕШЕНИЕ] Я правильно решил?"
 """
 
-user_chats = {}
+# ====== ФУНКЦИЯ ОТВЕТА ======
+def generate_response(user_text):
+    try:
+        response = client.chat.completions.create(
+            model="llama3.1-8b",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_text}
+            ]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print("Ошибка LLM:", e)
+        return "Учитель... у меня опять ничего не получилось 😢"
 
-# =====================
-# AI
-# =====================
-def generate_response(user_id, text):
-    if user_id not in user_chats:
-        user_chats[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    user_chats[user_id].append({"role": "user", "content": text})
-
-    response = client.chat.completions.create(
-        model="llama3.1-8b",
-        messages=user_chats[user_id],
-        temperature=0.7,
-    )
-
-    answer = response.choices[0].message.content
-    user_chats[user_id].append({"role": "assistant", "content": answer})
-
-    return answer
-
-
-# =====================
-# TELEGRAM HANDLERS
-# =====================
-@bot.message_handler(commands=['start', 'reset'])
-def start_handler(message):
-    user_id = message.chat.id
-    user_chats[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    bot.send_message(user_id, "Начинаю сессию...")
-
-    response = generate_response(user_id, "Начни сессию")
-    bot.send_message(user_id, response)
-
-
+# ====== ОБРАБОТЧИК ======
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    user_id = message.chat.id
-    text = message.text
+    print("Новое сообщение:", message.text)
 
-    try:
-        response = generate_response(user_id, text)
-        bot.send_message(user_id, response)
-    except Exception as e:
-        print("Ошибка:", e)
-        bot.send_message(user_id, "Ошибка генерации ответа")
+    reply = generate_response(message.text)
 
+    bot.send_message(message.chat.id, reply)
 
-# =====================
-# POLLING (в отдельном потоке)
-# =====================
+# ====== POLLING В ОТДЕЛЬНОМ ПОТОКЕ ======
 def run_bot():
-    print("=== BOT STARTED (polling) ===")
-    while True:
-        try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=60)
-        except Exception as e:
-            print("Polling error:", e)
-            time.sleep(5)
-
+    print("Бот запущен (polling)")
+    bot.infinity_polling()
 
 threading.Thread(target=run_bot).start()
 
-
-# =====================
-# FAKE WEB SERVER (для Render)
-# =====================
+# ====== ФЕЙКОВЫЙ СЕРВЕР ДЛЯ RENDER ======
 @app.route("/")
 def home():
-    return "Bot is running", 200
+    return "Bot is running"
 
-
-@app.route("/health")
-def health():
-    return "ok", 200
-
-
-print("=== APP STARTED ===")
+# ====== ЗАПУСК ======
+if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
