@@ -3,28 +3,17 @@ import telebot
 from flask import Flask, request
 from cerebras.cloud.sdk import Cerebras
 
-# =========================
-# ENV VARIABLES
-# =========================
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-CEREBRAS_API_KEY = os.environ.get('CEREBRAS_API_KEY')
+# ===== Настройки =====
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
+RENDER_URL = os.environ.get("RENDER_URL")
 
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN not set")
-if not CEREBRAS_API_KEY:
-    raise ValueError("CEREBRAS_API_KEY not set")
+if not BOT_TOKEN or not CEREBRAS_API_KEY or not RENDER_URL:
+    raise ValueError("Одна из переменных окружения не установлена")
 
-# =========================
-# INIT
-# =========================
 bot = telebot.TeleBot(BOT_TOKEN)
 client = Cerebras(api_key=CEREBRAS_API_KEY)
 
-app = Flask(__name__)
-
-# =========================
-# SYSTEM PROMPT
-# =========================
 SYSTEM_PROMPT = """
 Ты — симулятор школьника для студентов-педагогов. Студент-педагог тренируется объяснять материал.
 Твоя ЦЕЛЬ: вести себя как школьник, который плохо понял тему.
@@ -77,15 +66,11 @@ SYSTEM_PROMPT = """
 - Обращаться на "ты" (используйте "Вы").
 """
 
-# =========================
-# MEMORY
-# =========================
 user_chats = {}
 
 def generate_response(user_id, user_message=None):
     if user_id not in user_chats:
         user_chats[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-
     if user_message:
         user_chats[user_id].append({"role": "user", "content": user_message})
 
@@ -95,68 +80,46 @@ def generate_response(user_id, user_message=None):
             messages=user_chats[user_id],
             temperature=0.7,
         )
-
-        if response and response.choices:
-            bot_answer = response.choices[0].message.content
-        else:
-            bot_answer = "Ошибка ответа модели."
-
+        bot_answer = response.choices[0].message.content if response.choices else "Ошибка от модели"
         user_chats[user_id].append({"role": "assistant", "content": bot_answer})
         return bot_answer
-
     except Exception as e:
         return f"Ошибка API: {e}"
 
-# =========================
-# TELEGRAM HANDLERS
-# =========================
-@bot.message_handler(commands=['start', 'reset'])
-def start(message):
-    user_id = message.chat.id
-    user_chats[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+# ===== Flask =====
+app = Flask(__name__)
 
-    bot.reply_to(message, "Сбрасываю память... Генерирую задачу.")
-
-    user_chats[user_id].append({
-        "role": "user",
-        "content": "Начни сессию."
-    })
-
-    response = generate_response(user_id)
-    bot.reply_to(message, response)
-
-@bot.message_handler(func=lambda message: True)
-def handle(message):
-    user_id = message.chat.id
-    response = generate_response(user_id, message.text)
-    bot.reply_to(message, response)
-
-# =========================
-# WEBHOOK
-# =========================
-from flask import Flask, request
-import os
-import telebot
-
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-bot = telebot.TeleBot(BOT_TOKEN)
+@app.route('/')
+def index():
+    return "Bot is running", 200
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     json_str = request.get_data().decode("UTF-8")
     update = telebot.types.Update.de_json(json_str)
+    print(f"Получен POST: {update}")  # <-- логируем все запросы
     bot.process_new_updates([update])
     return "OK", 200
 
-# =========================
-# START
-# =========================
+# ===== Handlers =====
+@bot.message_handler(commands=['start', 'reset'])
+def send_welcome(message):
+    user_id = message.chat.id
+    user_chats[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    bot.reply_to(message, "Сбрасываю память... Генерирую новую задачу для тренировки.")
+    user_chats[user_id].append({"role": "user", "content": "Начни сессию"})
+    response = generate_response(user_id)
+    bot.reply_to(message, response)
+
+@bot.message_handler(func=lambda m: True)
+def echo_all(message):
+    user_id = message.chat.id
+    response = generate_response(user_id, message.text)
+    bot.reply_to(message, response)
+
+# ===== Установка webhook =====
 if __name__ == "__main__":
-    RENDER_URL = os.environ.get("RENDER_URL")
-
-    if not RENDER_URL:
-        raise ValueError("RENDER_URL not set")
-
-    print("Setting webhook...")
+    print("Устанавливаем webhook...")
     bot.remove_webhook()
     bot.set_webhook(url=f"{RENDER_URL}/{BOT_TOKEN}")
+    print("Webhook установлен")
