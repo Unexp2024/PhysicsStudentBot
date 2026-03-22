@@ -101,6 +101,9 @@ threading.Thread(target=run_bot).start()
 @app.route("/")
 def home():
     return "Bot is running"
+@app.route("/health")
+def health_check():
+    return "OK", 200
 
 # ====== ЗАПУСК ======
 if __name__ == "__main__":
