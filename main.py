@@ -75,15 +75,18 @@ def generate_response(user_id, user_message=None):
         user_chats[user_id].append({"role": "user", "content": user_message})
 
     try:
+        print(f"Отправка запроса в Cerebras для user {user_id}: {user_message}")
         response = client.chat.completions.create(
             model="llama3.1-8b",
             messages=user_chats[user_id],
             temperature=0.7,
         )
+        print(f"Cerebras ответил: {response}")
         bot_answer = response.choices[0].message.content if response.choices else "Ошибка от модели"
         user_chats[user_id].append({"role": "assistant", "content": bot_answer})
         return bot_answer
     except Exception as e:
+        print(f"Ошибка API Cerebras: {e}")
         return f"Ошибка API: {e}"
 
 # ===== Flask =====
