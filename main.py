@@ -143,7 +143,9 @@ def webhook():
 @app.route("/", methods=["GET"])
 def index():
     return "Bot is running", 200
-
+@app.route("/health")
+def health():
+    return "ok", 200
 
 # =====================
 # WEBHOOK SETUP
@@ -156,3 +158,4 @@ try:
     print("Webhook установлен:", WEBHOOK_URL)
 except Exception as e:
     print("Ошибка webhook:", e)
+print("=== APP STARTED ===")
