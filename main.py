@@ -134,4 +134,5 @@ def index():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     # запускаем Flask (Render требует bind на $PORT)
-    app.run(host="0.0.0.0", port=port)print("Webhook установлен")
+    app.run(host="0.0.0.0", port=port)
+print("Webhook установлен")
