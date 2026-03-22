@@ -1,16 +1,15 @@
+import os
+from flask import Flask, request
 import telebot
-import threading
-from flask import Flask
-from cerebras.cloud.sdk import Cerebras
 
-# ====== НАСТРОЙКИ ======
-BOT_TOKEN = "8761525368:AAH8_n-0yqnzUWGYbCMNWjQnBMTPRGpvHyA"
-CEREBRAS_API_KEY = "csk-xwhxpc4dc3p3ved43e9xwppph32h8ek5n8feeh8jymhjjjt3"
+# ====== Конфигурация ======
+BOT_TOKEN = os.environ.get("BOT_TOKEN")  # Telegram Bot Token из переменных окружения
+WEBHOOK_PATH = f"/{BOT_TOKEN}"
+WEBHOOK_URL_BASE = os.environ.get("WEBHOOK_URL_BASE")  # https://имя_проекта.onrender.com
+PORT = int(os.environ.get("PORT", 5000))
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
-
-client = Cerebras(api_key=CEREBRAS_API_KEY)
 
 SYSTEM_PROMPT = """
 Ты — симулятор школьника для студентов-педагогов. Студент-педагог тренируется объяснять материал.
@@ -66,47 +65,33 @@ SYSTEM_PROMPT = """
 - Отправлять пользователю какой-либо текст до того как ты сгенерировал "Учитель! Что-то я плохо понял тему [ТЕМА]. Давайте я попробую решить задачу по ней: [ЗАДАЧА + НЕПРАВИЛЬНОЕ РЕШЕНИЕ] Я правильно решил?"
 """
 
-# ====== ФУНКЦИЯ ОТВЕТА ======
-def generate_response(user_text):
-    try:
-        response = client.chat.completions.create(
-            model="llama3.1-8b",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_text}
-            ]
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        print("Ошибка LLM:", e)
-        return "Учитель... у меня опять ничего не получилось 😢"
+# ====== Функция обработки сообщений ======
+@bot.message_handler(commands=["start"])
+def handle_start(message):
+    bot.send_message(message.chat.id, "Учитель! Что-то я плохо понял тему 'работа и мощность'.")
 
-# ====== ОБРАБОТЧИК ======
-@bot.message_handler(func=lambda message: True)
-def handle_message(message):
-    print("Новое сообщение:", message.text)
-
-    reply = generate_response(message.text)
-
+@bot.message_handler(func=lambda m: True)
+def handle_all(message):
+    user_text = message.text
+    # Здесь можно подключить генерацию ответа через ChatGPT
+    reply = f"Вы сказали: {user_text}. Я думаю, что я что-то путаю..."
     bot.send_message(message.chat.id, reply)
 
-# ====== POLLING В ОТДЕЛЬНОМ ПОТОКЕ ======
-def run_bot():
-    print("Бот запущен (polling)")
-    bot.infinity_polling()
-
-threading.Thread(target=run_bot).start()
-
-# ====== ФЕЙКОВЫЙ СЕРВЕР ДЛЯ RENDER ======
-@app.route("/")
-def home():
-    return "Bot is running"
-@app.route("/health")
-def health_check():
+# ====== Flask роуты ======
+@app.route(WEBHOOK_PATH, methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    print("POST пришёл")
     return "OK", 200
 
-# ====== ЗАПУСК ======
+@app.route("/health")
+def health():
+    return "OK", 200
+
+# ====== Установка вебхука ======
 if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL_BASE + WEBHOOK_PATH)
+    print(f"Webhook установлен: {WEBHOOK_URL_BASE + WEBHOOK_PATH}")
