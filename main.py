@@ -149,7 +149,7 @@ def index():
 # START
 # =========================
 if __name__ == "__main__":
-    RENDER_URL = os.environ.get("RENDER_URL")  # добавим это в Render
+    RENDER_URL = os.environ.get("RENDER_URL")
 
     if not RENDER_URL:
         raise ValueError("RENDER_URL not set")
@@ -157,7 +157,3 @@ if __name__ == "__main__":
     print("Setting webhook...")
     bot.remove_webhook()
     bot.set_webhook(url=f"{RENDER_URL}/{BOT_TOKEN}")
-
-    print("Starting server...")
-    port = int(os.environ.get("PORT", 10000))
-app.run(host="0.0.0.0", port=port)
