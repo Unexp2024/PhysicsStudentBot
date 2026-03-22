@@ -2,21 +2,15 @@ import os
 import telebot
 from flask import Flask, request, jsonify
 from cerebras.cloud.sdk import Cerebras
+import threading
 
-# =====================
-# ==== Переменные ====
-# =====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
-RENDER_EXTERNAL_PORT = os.environ.get("PORT", 10000)
-
-if not BOT_TOKEN:
-    raise ValueError("Не задан BOT_TOKEN")
-if not CEREBRAS_API_KEY:
-    raise ValueError("Не задан CEREBRAS_API_KEY")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 client = Cerebras(api_key=CEREBRAS_API_KEY)
+
+app = Flask(__name__)
 
 SYSTEM_PROMPT = """
 Ты — симулятор школьника для студентов-педагогов. Студент-педагог тренируется объяснять материал.
@@ -72,71 +66,85 @@ SYSTEM_PROMPT = """
 - Отправлять пользователю какой-либо текст до того как ты сгенерировал "Учитель! Что-то я плохо понял тему [ТЕМА]. Давайте я попробую решить задачу по ней: [ЗАДАЧА + НЕПРАВИЛЬНОЕ РЕШЕНИЕ] Я правильно решил?"
 """
 
-# ==========================
-# ==== Хранилище чатов ====
-# ==========================
 user_chats = {}
 
-# =====================================
-# ==== Функция генерации ответа AI ====
-# =====================================
-def generate_response(user_id, user_message=None):
+def generate_response(user_id, text):
     if user_id not in user_chats:
         user_chats[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-    if user_message:
-        user_chats[user_id].append({"role": "user", "content": user_message})
 
+    user_chats[user_id].append({"role": "user", "content": text})
+
+    response = client.chat.completions.create(
+        model="llama3.1-8b",
+        messages=user_chats[user_id],
+        temperature=0.7,
+    )
+
+    answer = response.choices[0].message.content
+    user_chats[user_id].append({"role": "assistant", "content": answer})
+
+    return answer
+
+
+# ==========================
+# ВАЖНО: обработка в фоне
+# ==========================
+def process_message(chat_id, text):
     try:
-        response = client.chat.completions.create(
-            model="llama3.1-8b",
-            messages=user_chats[user_id],
-            temperature=0.7,
-        )
+        print("Обработка сообщения:", text)
 
-        if response and response.choices and len(response.choices) > 0:
-            bot_answer = response.choices[0].message.content
-        else:
-            bot_answer = "Не удалось получить ответ от модели. Попробуйте ещё раз."
+        response = generate_response(chat_id, text)
 
-        user_chats[user_id].append({"role": "assistant", "content": bot_answer})
-        return bot_answer
+        bot.send_message(chat_id, response)
 
     except Exception as e:
-        return f"Ошибка API: {e}"
+        print("Ошибка:", e)
+        bot.send_message(chat_id, "Ошибка генерации ответа")
+
 
 # ==========================
-# ==== Flask-сервер =======
+# Webhook
 # ==========================
-app = Flask(__name__)
-
-@app.route("/", methods=["GET"])
-def index():
-    return "Bot is running", 200
-
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    data = request.get_json(force=True)
-    print("Получен POST:", data)
+    data = request.get_json()
 
     if "message" in data:
         message = data["message"]
         chat_id = message["chat"]["id"]
-        text = message.get("text")
-        if text:
-            response_text = generate_response(chat_id, text)
-            bot.send_message(chat_id, response_text)
-    return jsonify({"status": "ok"}), 200
+        text = message.get("text", "")
+
+        # 🚀 Запуск в отдельном потоке
+        threading.Thread(
+            target=process_message,
+            args=(chat_id, text)
+        ).start()
+
+    # ⚡ МГНОВЕННЫЙ ответ Telegram
+    return jsonify({"ok": True})
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return "Bot is running"
+
 
 # ==========================
-# ==== Установка webhook ===
+# Установка webhook
 # ==========================
 WEBHOOK_URL = f"https://physicsstudentbot.onrender.com/{BOT_TOKEN}"
-bot.remove_webhook()
-bot.set_webhook(WEBHOOK_URL)
-print("Webhook установлен")
+
+try:
+    bot.remove_webhook()
+    bot.set_webhook(WEBHOOK_URL)
+    print("Webhook установлен:", WEBHOOK_URL)
+except Exception as e:
+    print("Ошибка webhook:", e)
+
 
 # ==========================
-# ==== Запуск сервера ======
+# Запуск
 # ==========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(RENDER_EXTERNAL_PORT))
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
