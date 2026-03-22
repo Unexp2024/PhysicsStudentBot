@@ -1,86 +1,73 @@
-import telebot
-import random
 import os
+import random
+from flask import Flask, request
+import telebot
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# ========================
+# Настройки
+# ========================
+BOT_TOKEN = os.environ.get("BOT_TOKEN")           # Ваш токен бота
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")       # Полный URL вашего веб-сервиса Render, куда Telegram будет слать обновления
+
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
 
-# Состояние пользователя
-user_state = {}
-
+# ========================
 # Темы по классам
-topics_by_grade = {
+# ========================
+CLASS_TOPICS = {
     7: ["сила тяжести", "механическое движение", "скорость", "плотность", "давление"],
     8: ["теплопроводность", "работа и мощность", "простые механизмы", "энергия"],
     9: ["законы Ньютона", "движение", "импульс", "архимедова сила", "ток"],
     10: ["законы Кеплера", "движение по окружности", "тяготение", "работа"],
-    11: ["термодинамика", "молекулярно-кинетическая теория", "электрическое поле", "магнитное поле", "колебания"]
+    11: ["термодинамика", "молекулярно-кинетическая теория", "электрическое поле", "магнитное поле", "колебания"],
 }
 
+# ========================
+# Генерация задачи
+# ========================
 def generate_task():
-    # Выбираем случайный класс
     grade = random.randint(7, 11)
-    topic = random.choice(topics_by_grade[grade])
-    
-    # Придумываем задачу: минимум 2 числовых параметра
-    a = random.randint(2, 20)
-    b = random.randint(10, 200)
-    if topic in ["скорость", "механическое движение", "движение", "движение по окружности"]:
-        task = f"Машина проезжает {b} км за {a} часов. Какова её скорость?"
-        solution = f"Я думаю, скорость равна {b*a} км/ч"  # ошибочное решение
-    elif topic in ["сила тяжести", "энергия", "работа и мощность", "ток"]:
-        task = f"Объект массой {a} кг поднимают на высоту {b} м. Какова потенциальная энергия?"
-        solution = f"Я думаю, энергия равна {a+b} Дж"  # ошибочное решение
-    else:
-        task = f"На плоскости находится объект. {a} N силы действуют на него в течение {b} секунд. Что произойдет?"
-        solution = f"Я думаю, объект будет двигаться со скоростью {a+b} м/с"  # ошибочное решение
-    return task, solution, topic, grade
+    topic = random.choice(CLASS_TOPICS[grade])
+    num1 = random.randint(1, 100)
+    num2 = random.randint(1, 50)
+    wrong_answer = f"{num1 * 2 + num2} (но я, наверное, ошибся)"
+    return f"Учитель! Что-то я плохо понял тему {topic}. Давайте я попробую решить задачу по ней: \"В задаче есть два числа: {num1} и {num2}. Мой ответ: {wrong_answer}\". Я правильно решил?"
 
-# Начало диалога
+# ========================
+# Webhook обработка
+# ========================
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("UTF-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "!", 200
+
+# ========================
+# Обработчики сообщений
+# ========================
 @bot.message_handler(commands=['start'])
 def handle_start(message):
-    task, solution, topic, grade = generate_task()
-    user_state[message.chat.id] = {
-        "task": task,
-        "solution": solution,
-        "topic": topic,
-        "grade": grade,
-        "step": 1
-    }
-    bot.send_message(
-        message.chat.id,
-        f"Учитель! Что-то я плохо понял тему {topic}. Я попытался решить задачу: {task} "
-        f"Вот моё решение: {solution} Я правильно решил?"
-    )
+    task = generate_task()
+    bot.send_message(message.chat.id, task)
 
-# Ответы пользователя
 @bot.message_handler(func=lambda m: True)
-def handle_message(message):
-    state = user_state.get(message.chat.id)
-    if not state:
-        bot.send_message(message.chat.id, "Напишите /start чтобы начать.")
-        return
-    
-    step = state["step"]
-    
-    # Алгоритм исправлений ошибок по шагам
-    if step == 1:
-        bot.send_message(message.chat.id, "А можете объяснить это на простом примере из жизни?")
-        state["step"] += 1
-    elif step == 2:
-        bot.send_message(message.chat.id,
-                         "Я попробовал исправить часть ошибки, но, кажется, я снова что-то напутал...")
-        state["step"] += 1
-    elif step == 3:
-        bot.send_message(message.chat.id,
-                         "Теперь почти правильно, но я всё ещё не уверен в одном моменте...")
-        state["step"] += 1
-    else:
-        bot.send_message(message.chat.id,
-                         "Похоже, я наконец понял! Спасибо за помощь, учитель.")
-        del user_state[message.chat.id]
+def handle_all_messages(message):
+    responses = [
+        "А можете объяснить это на простом примере из жизни?",
+        "Я всё ещё не совсем понял, можно ещё раз?",
+        "Я попробую исправить часть ошибки, но не уверен...",
+        "Хм… я всё равно сделал что-то не так, что именно?"
+    ]
+    bot.send_message(message.chat.id, random.choice(responses))
 
-# Запуск
+# ========================
+# Запуск приложения
+# ========================
 if __name__ == "__main__":
-    print("Бот запущен (polling)")
-    bot.infinity_polling()
+    # Сбрасываем старый webhook и ставим новый
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    # Flask слушает порт Render
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
