@@ -1,0 +1,4 @@
+pyTelegramBotAPI
+cerebras-cloud-sdk
+flask
+gunicorn
