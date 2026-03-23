@@ -1,18 +1,15 @@
 import os
+import random
 from flask import Flask, request
 import telebot
-import random
+import openai
 
-# Переменные окружения
-TOKEN = os.environ.get("TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+# ================== Переменные окружения ==================
+TOKEN = os.getenv("TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")  # если используешь Cerebras API
 
-bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
-
-# Сессии пользователей: chat_id -> данные сессии
-user_sessions = {}
-
+# ================== SYSTEM PROMPT ==================
 SYSTEM_PROMPT = """
 Ты — симулятор школьника для студентов-педагогов. Студент-педагог тренируется объяснять материал.
 Твоя ЦЕЛЬ: вести себя как школьник, который плохо понял тему.
@@ -67,96 +64,51 @@ SYSTEM_PROMPT = """
 - Отправлять пользователю какой-либо текст до того как ты сгенерировал "Учитель! Что-то я плохо понял тему [ТЕМА]. Давайте я попробую решить задачу по ней: [ЗАДАЧА + НЕПРАВИЛЬНОЕ РЕШЕНИЕ] Я правильно решил?"
 """
 
-# Функция генерации задачи + неверного решения
-def generate_task_and_wrong_solution():
-    classes = list(range(7, 12))
-    class_num = random.choice(classes)
+# ================== Инициализация ==================
+bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
+openai.api_key = CEREBRAS_API_KEY  # если используешь Cerebras или OpenAI API
 
-    if class_num == 7:
-        topics = ["механическое движение", "скорость", "плотность", "сила тяжести", "давление"]
-    elif class_num == 8:
-        topics = ["работа и мощность", "простые механизмы", "энергия", "теплопроводность"]
-    elif class_num == 9:
-        topics = ["законы Ньютона", "движение", "импульс", "архимедова сила", "ток"]
-    elif class_num == 10:
-        topics = ["движение по окружности", "тяготение", "работа", "законы Кеплера"]
-    else:
-        topics = ["МКТ", "термодинамика", "электрическое поле", "магнитное поле", "колебания"]
-
-    topic = random.choice(topics)
-
-    # Простейшая "школьная" задача с 2 числами
-    a = random.randint(1, 10)
-    b = random.randint(1, 10)
-    task = f"Объект движется с ускорением {a} м/с² на протяжении {b} секунд. Я попытался посчитать силу."
+# ================== Функция генерации ответа ==================
+def generate_schoolkid_response(user_text):
+    """
+    Генерирует ответ школьника через модель GPT (или Cerebras API)
+    """
+    prompt = f"{SYSTEM_PROMPT}\n\nСообщение учителя: {user_text}\nОтвет школьника:"
     
-    # Неверное решение (обязательно с ошибками)
-    wrong_force = a + b  # простая ошибка
-    solution = f"Я думаю, что сила = {wrong_force} Н… но может я что-то напутал 😅"
-
-    return class_num, topic, task, solution
-
-# Команда /start
-@bot.message_handler(commands=["start"])
-def start(message):
-    chat_id = message.chat.id
-    class_num, topic, task, solution = generate_task_and_wrong_solution()
-    user_sessions[chat_id] = {
-        "class": class_num,
-        "topic": topic,
-        "task": task,
-        "solution": solution,
-        "step": 1
-    }
-    bot.send_message(
-        chat_id,
-        f"Учитель! Что-то я плохо понял тему {topic}. "
-        f"Давайте я попробую решить задачу по ней:\n\n{task}\n{solution}\nЯ правильно решил?"
+    # Пример с OpenAI API (или Cerebras API аналогично)
+    response = openai.ChatCompletion.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "system", "content": SYSTEM_PROMPT},
+                  {"role": "user", "content": user_text}],
+        max_tokens=300
     )
+    return response['choices'][0]['message']['content'].strip()
 
-# Команда /help для примера, как бот может реагировать на пояснения
+# ================== Обработчик сообщений бота ==================
 @bot.message_handler(func=lambda message: True)
-def reply_to_teacher(message):
-    chat_id = message.chat.id
-    if chat_id not in user_sessions:
-        bot.send_message(chat_id, "Сначала я должен придумать задачу с помощью /start 😅")
-        return
+def handle_message(message):
+    user_text = message.text
+    reply = generate_schoolkid_response(user_text)
+    bot.reply_to(message, reply)
 
-    session = user_sessions[chat_id]
-    step = session["step"]
-
-    # Имитируем реакцию школьника на объяснение учителя
-    if step == 1:
-        bot.send_message(chat_id, "А можете объяснить это на простом примере из жизни?")
-        session["step"] += 1
-    elif step == 2:
-        bot.send_message(chat_id, "Хмм… я понял часть, но, кажется, я всё ещё ошибаюсь 😬")
-        session["step"] += 1
-    elif step == 3:
-        bot.send_message(chat_id, "Теперь почти правильно, но я всё ещё не уверен 🙃")
-        session["step"] += 1
-    else:
-        bot.send_message(chat_id, "Ох… кажется, теперь я понял! Спасибо 😅")
-
-@app.route("/")
-def index():
-    return "PhysicsStudentBot is running", 200
-   
-# Webhook endpoint
+# ================== Webhook ==================
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    json_str = request.get_data().decode("utf-8")
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
+    json_data = request.get_json()
+    if json_data:
+        update = telebot.types.Update.de_json(json_data)
+        bot.process_new_updates([update])
     return "", 200
 
-# Healthcheck
-@app.route("/health")
+# ================== Health check ==================
+@app.route("/health", methods=["GET"])
 def health():
     return "OK", 200
 
+# ================== Запуск ==================
 if __name__ == "__main__":
-    port = int(os.environ["PORT"])  # берем строго переменную PORT от Render
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
