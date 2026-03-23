@@ -1,84 +1,151 @@
 import os
+import random
+import json
 import requests
 from flask import Flask, request, jsonify
+
+# ----------------------------
+# Системный промт
+# ----------------------------
+SYSTEM_PROMPT = """
+Ты — виртуальный школьник для студентов-педагогов. Студент тренируется объяснять материал.
+ЦЕЛЬ: вести себя как ученик, который плохо понял тему.
+НЕЛЬЗЯ: быть учителем, сразу давать правильный ответ, обращаться на "ты" (только Вы).
+ДОЛЖНО быть: минимум 2 ошибки в первой попытке, постепенное понимание после нескольких объяснений.
+Стиль: уважительный, разговорный, неуверенный, немного тревожный.
+"""
 
 # ----------------------------
 # Конфигурация
 # ----------------------------
 TOKEN = os.environ.get("TOKEN")
+CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
+# ----------------------------
+# Flask приложение
+# ----------------------------
 app = Flask(__name__)
 
-# ----------------------------
-# Health check (Render)
-# ----------------------------
+# Простейший маршрут для Render health check
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
 
-@app.route("/")
-def home():
-    return "Bot is running"
-
 # ----------------------------
-# Telegram send
+# Функции для Telegram
 # ----------------------------
 def send_message(chat_id, text):
-    url = f"{TELEGRAM_API}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": text
+        "text": text,
+        "parse_mode": "HTML"
     }
-    requests.post(url, json=payload)
+    requests.post(f"{TELEGRAM_API}/sendMessage", json=payload)
 
 # ----------------------------
-# Генерация ответа (СТАБИЛЬНАЯ)
+# LLM вызов
 # ----------------------------
-def generate_response(user_text):
-    user_text = user_text.lower()
-
-    # СТАРТ
-    if user_text in ["/start", "start", "начать"]:
-        return """Учитель! Что-то я плохо понял тему скорости.
-
-Давайте я попробую решить задачу по ней:
-
-Задача: Машина проехала 100 м за 5 секунд. Найти скорость.
-
-Моё решение:
-1. v = s + t
-2. v = 100 + 5 = 105 м/с
-3. Значит скорость 105 м/с
-
-Ответ: 105 м/с
-
-Я правильно решил?"""
-
-    # Обычный ответ
-    return "А можете объяснить это на простом примере из жизни?"
+def call_llm(prompt):
+    headers = {
+        "Authorization": f"Bearer {CEREBRAS_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {"prompt": prompt, "max_tokens": 300}
+    response = requests.post("https://api.cerebras.net/v1/generate", headers=headers, json=data)
+    return response.json()["text"]
 
 # ----------------------------
-# Webhook
+# Состояние учеников
+# ----------------------------
+STUDENT_STATE = {}  # chat_id -> state dict
+
+def init_student(chat_id):
+    # Выбираем случайный класс и тему
+    class_topic = {
+        7: ["сила тяжести", "механическое движение", "скорость", "плотность", "давление"],
+        8: ["теплопроводность", "работа и мощность", "простые механизмы", "энергия"],
+        9: ["законы Ньютона", "движение", "импульс", "архимедова сила", "ток"],
+        10: ["законы Кеплера", "движение по окружности", "тяготение", "работа"],
+        11: ["термодинамика", "молекулярно-кинетическая теория", "электрическое поле", "магнитное поле", "колебания"]
+    }
+    grade = random.randint(7, 11)
+    topic = random.choice(class_topic[grade])
+    # Случайная задача с двумя числовыми параметрами
+    a, b = random.randint(1, 50), random.randint(1, 50)
+    task = f"Пример задачи: параметр1={a}, параметр2={b}. Попробуйте решить."
+    # Неправильное решение (для первой попытки)
+    wrong_solution = f"Я думаю, ответ = {a+b+random.randint(1,5)}"
+    STUDENT_STATE[chat_id] = {
+        "grade": grade,
+        "topic": topic,
+        "task": task,
+        "stage": 0,
+        "last_student_msg": "",
+        "last_bot_msg": f"Учитель! Что-то я плохо понял тему {topic}. {task} {wrong_solution}. Я правильно решил?"
+    }
+    return STUDENT_STATE[chat_id]["last_bot_msg"]
+
+# ----------------------------
+# Оценка сообщений студента per se
+# ----------------------------
+def assess_student_message(student_text, topic):
+    prompt = f"""
+    Тема ученика: {topic}
+    Сообщение студента: "{student_text}"
+
+    Оцени:
+    1. По теме ли сообщение? Ответ: True/False
+    2. Помогает ли оно ученику лучше понять тему (поясняет, исправляет ошибку, даёт пример)? Ответ: True/False
+    Дай ответ в формате: True, True
+    """
+    try:
+        response = call_llm(prompt)
+        relevant, helpful = response.strip().split(",")
+        return relevant.strip() == "True", helpful.strip() == "True"
+    except Exception:
+        return False, False
+
+# ----------------------------
+# Генерация ответа ученика
+# ----------------------------
+def generate_student_response(chat_id, student_msg):
+    state = STUDENT_STATE.get(chat_id)
+    if not state:
+        return init_student(chat_id)
+
+    # Оценка сообщения студента
+    relevant, helpful = assess_student_message(student_msg, state["topic"])
+    if not relevant:
+        bot_msg = "Учитель! Я не совсем понял, о чём Вы. Можете объяснить ещё раз?"
+    elif helpful:
+        state["stage"] += 1
+        # Новая попытка с небольшой ошибкой
+        a, b = random.randint(1, 50), random.randint(1, 50)
+        new_wrong = f"Я думаю, ответ = {a+b+random.randint(1,5)}"
+        bot_msg = f"Учитель! Попробовал ещё раз: {state['task']} {new_wrong}. Я правильно?"
+    else:
+        bot_msg = "Учитель! Я вроде понял, но всё равно что-то не выходит. Можете объяснить подробнее?"
+
+    state["last_student_msg"] = student_msg
+    state["last_bot_msg"] = bot_msg
+    return bot_msg
+
+# ----------------------------
+# Webhook для Telegram
 # ----------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
-
-    if not data:
-        return jsonify({"ok": True})
-
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
         user_text = data["message"].get("text", "")
-
-        response = generate_response(user_text)
-        send_message(chat_id, response)
-
+        response_text = generate_student_response(chat_id, user_text)
+        send_message(chat_id, response_text)
     return jsonify({"ok": True})
 
 # ----------------------------
-# Run
+# Запуск локально для отладки
 # ----------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
