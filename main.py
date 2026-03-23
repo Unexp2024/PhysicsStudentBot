@@ -1,20 +1,8 @@
 import os
 import random
-import requests
 from flask import Flask, request, jsonify
 
-# -------------------------
-# Настройки LLM
-# -------------------------
-CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "")
-CEREBRAS_URL = os.getenv("CEREBRAS_URL", "https://api.cerebras.net/v1/llm/chat/completions")
-
-# -------------------------
-# Flask init
-# -------------------------
-print("🚀 APP STARTING...")
 app = Flask(__name__)
-print("🔥 Flask init...")
 
 # -------------------------
 # Состояние пользователя
@@ -50,25 +38,6 @@ def generate_task():
     return topic, task_text
 
 # -------------------------
-# Вызов LLM
-# -------------------------
-def call_llm(messages, temperature=0.7):
-    try:
-        headers = {
-            "Authorization": f"Bearer {CEREBRAS_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        response = requests.post(CEREBRAS_URL, headers=headers, json={
-            "model": "llama3.1-70b",
-            "messages": messages,
-            "temperature": temperature
-        }, timeout=20)
-        return response.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        print("LLM ERROR:", e)
-        return "Учитель! Я плохо понял тему скорость. Я тут решил задачу, но запутался... Я правильно решил?"
-
-# -------------------------
 # Проверка ответа пользователя
 # -------------------------
 def evaluate_student_response(user_msg, state):
@@ -83,7 +52,7 @@ def evaluate_student_response(user_msg, state):
     return False
 
 # -------------------------
-# Flask маршруты
+# Маршруты
 # -------------------------
 @app.route("/")
 def home():
@@ -132,8 +101,8 @@ def webhook():
     return jsonify({"bot_message": bot_reply})
 
 # -------------------------
-# Запуск локально
+# Локальный запуск (dev)
 # -------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port)
