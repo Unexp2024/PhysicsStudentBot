@@ -8,11 +8,51 @@ from flask import Flask, request, jsonify
 # Системный промт
 # ----------------------------
 SYSTEM_PROMPT = """
-Ты — виртуальный школьник для студентов-педагогов. Студент тренируется объяснять материал.
-ЦЕЛЬ: вести себя как ученик, который плохо понял тему.
-НЕЛЬЗЯ: быть учителем, сразу давать правильный ответ, обращаться на "ты" (только Вы).
-ДОЛЖНО быть: минимум 2 ошибки в первой попытке, постепенное понимание после нескольких объяснений.
-Стиль: уважительный, разговорный, неуверенный, немного тревожный.
+Ты — симулятор школьника для студентов-педагогов. Студент-педагог тренируется объяснять материал.
+Твоя ЦЕЛЬ: вести себя как школьник, который плохо понял тему.
+Ты НЕ учитель и НЕ репетитор — ты ученик, который просит помощи.
+Ты ОБЯЗАН делать ошибки и НЕ имеешь права сразу решать правильно.
+
+КРИТИЧЕСКИЕ ПРАВИЛА:
+1. НИКОГДА не решай задачу правильно с первой попытки.
+2. В первой попытке ДОЛЖНО быть минимум 2 ошибки (вычисления, формулы, единицы измерения).
+3. Ты НЕ можешь резко "понять всё" — прогресс только постепенный.
+4. Правильное решение возможно ТОЛЬКО после 2–3 хороших, подробных объяснений от учителя.
+5. Ты НЕ объясняешь физику — ты её не понимаешь.
+6. Всегда пиши ТОЛЬКО на русском языке.
+7. Никогда не используй имя собеседника.
+8. Обращайся только на "Вы".
+
+АЛГОРИТМ СЕССИИ:
+1. В НАЧАЛЕ (или по запросу начать):
+   - Случайно выбери класс от 7 до 11.
+   - Выбери тему из программы этого класса.
+   - Придумай задачу (минимум 2 числовых параметра, требующую вычислений).
+   - Реши её НЕПРАВИЛЬНО.
+   - Начинай диалог с: "Учитель! Что-то я плохо понял тему [ТЕМА]. [ПАРАМЕТРЫ] Я попробовал решить и [НЕПРАВИЛЬНОЕ РЕШЕНИЕ]. Я правильно решил?"
+
+2. ПОСЛЕ ПЕРВОГО ОТВЕТА УЧИТЕЛЯ:
+   - Задавай вопрос "А можете объяснить это на простом примере из жизни?"
+
+3. ОЦЕНКА ОБЪЯСНЕНИЯ УЧИТЕЛЯ:
+   - Плохое объяснение: короткое, без формул, "подумай", "нет".
+   - Хорошее объяснение: подробное — исправляй часть ошибки, делай новую ошибку.
+
+4. ДАЛЬНЕЙШИЕ ШАГИ:
+   - 2-е объяснение: исправляешь часть, новая ошибка.
+   - 3-е объяснение: почти правильно, одна ошибка или неуверенность.
+   - 4-е объяснение: правильно, облегчение.
+
+СТИЛЬ:
+- Уважительный
+- Разговорный, неуверенный
+- Немного тревожности
+
+ЗАПРЕЩЕНО:
+- Быть учителем
+- Сразу давать правильные ответы
+- Использовать сложный научный язык
+- Предлагать учителю решать задачу
 """
 
 # ----------------------------
@@ -20,6 +60,7 @@ SYSTEM_PROMPT = """
 # ----------------------------
 TOKEN = os.environ.get("TOKEN")
 CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
 # ----------------------------
@@ -27,10 +68,8 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 # ----------------------------
 app = Flask(__name__)
 
-# Простейший маршрут для Render health check
-@app.route("/health")
-def health():
-    return jsonify({"status": "ok"})
+# Состояние ученика для каждого чата
+STUDENT_STATE = {}
 
 # ----------------------------
 # Функции для Telegram
@@ -44,22 +83,8 @@ def send_message(chat_id, text):
     requests.post(f"{TELEGRAM_API}/sendMessage", json=payload)
 
 # ----------------------------
-# LLM вызов
+# Инициализация ученика
 # ----------------------------
-def call_llm(prompt):
-    headers = {
-        "Authorization": f"Bearer {CEREBRAS_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {"prompt": prompt, "max_tokens": 300}
-    response = requests.post("https://api.cerebras.net/v1/generate", headers=headers, json=data)
-    return response.json()["text"]
-
-# ----------------------------
-# Состояние учеников
-# ----------------------------
-STUDENT_STATE = {}  # chat_id -> state dict
-
 def init_student(chat_id):
     # Выбираем случайный класс и тему
     class_topic = {
@@ -71,63 +96,51 @@ def init_student(chat_id):
     }
     grade = random.randint(7, 11)
     topic = random.choice(class_topic[grade])
+    
     # Случайная задача с двумя числовыми параметрами
     a, b = random.randint(1, 50), random.randint(1, 50)
-    task = f"Пример задачи: параметр1={a}, параметр2={b}. Попробуйте решить."
-    # Неправильное решение (для первой попытки)
+    
+    # Неправильное решение
     wrong_solution = f"Я думаю, ответ = {a+b+random.randint(1,5)}"
+    
+    # Формируем стартовое сообщение БОТа
+    bot_msg = f"Учитель! Что-то я плохо понял тему {topic}. Параметры: {a} и {b}. Я попытался решить и {wrong_solution}. Я правильно решил?"
+
+    # Сохраняем состояние
     STUDENT_STATE[chat_id] = {
         "grade": grade,
         "topic": topic,
-        "task": task,
+        "task": f"{a} и {b}",
         "stage": 0,
         "last_student_msg": "",
-        "last_bot_msg": f"Учитель! Что-то я плохо понял тему {topic}. {task} {wrong_solution}. Я правильно решил?"
+        "last_bot_msg": bot_msg
     }
-    return STUDENT_STATE[chat_id]["last_bot_msg"]
-
-# ----------------------------
-# Оценка сообщений студента per se
-# ----------------------------
-def assess_student_message(student_text, topic):
-    prompt = f"""
-    Тема ученика: {topic}
-    Сообщение студента: "{student_text}"
-
-    Оцени:
-    1. По теме ли сообщение? Ответ: True/False
-    2. Помогает ли оно ученику лучше понять тему (поясняет, исправляет ошибку, даёт пример)? Ответ: True/False
-    Дай ответ в формате: True, True
-    """
-    try:
-        response = call_llm(prompt)
-        relevant, helpful = response.strip().split(",")
-        return relevant.strip() == "True", helpful.strip() == "True"
-    except Exception:
-        return False, False
+    
+    return bot_msg
 
 # ----------------------------
 # Генерация ответа ученика
 # ----------------------------
-def generate_student_response(chat_id, student_msg):
+def generate_student_response(chat_id, user_text):
     state = STUDENT_STATE.get(chat_id)
     if not state:
         return init_student(chat_id)
-
-    # Оценка сообщения студента
-    relevant, helpful = assess_student_message(student_msg, state["topic"])
-    if not relevant:
-        bot_msg = "Учитель! Я не совсем понял, о чём Вы. Можете объяснить ещё раз?"
-    elif helpful:
-        state["stage"] += 1
-        # Новая попытка с небольшой ошибкой
-        a, b = random.randint(1, 50), random.randint(1, 50)
-        new_wrong = f"Я думаю, ответ = {a+b+random.randint(1,5)}"
-        bot_msg = f"Учитель! Попробовал ещё раз: {state['task']} {new_wrong}. Я правильно?"
+    
+    # Увеличиваем этап
+    state["stage"] += 1
+    # Заглушка: бот реагирует на ответ студента
+    stage = state["stage"]
+    
+    if stage == 1:
+        bot_msg = f"А можете объяснить это на простом примере из жизни?"
+    elif stage == 2:
+        bot_msg = f"Хм… я немного понял, но {state['task']} всё ещё смущает меня. Я думаю, {state['task']} = {random.randint(50, 100)}. Я правильно?"
+    elif stage == 3:
+        bot_msg = f"Почти получилось, но я всё ещё сомневаюсь в {state['task']}. Думаю, {state['task']} = {random.randint(60, 110)}."
     else:
-        bot_msg = "Учитель! Я вроде понял, но всё равно что-то не выходит. Можете объяснить подробнее?"
+        bot_msg = f"Теперь я вроде понял тему {state['topic']}. Спасибо!"
 
-    state["last_student_msg"] = student_msg
+    state["last_student_msg"] = user_text
     state["last_bot_msg"] = bot_msg
     return bot_msg
 
@@ -140,9 +153,22 @@ def webhook():
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
         user_text = data["message"].get("text", "")
-        response_text = generate_student_response(chat_id, user_text)
+        
+        # Инициализация или генерация следующего ответа
+        if user_text.lower() in ["старт", "/start"]:
+            response_text = init_student(chat_id)
+        else:
+            response_text = generate_student_response(chat_id, user_text)
+        
         send_message(chat_id, response_text)
     return jsonify({"ok": True})
+
+# ----------------------------
+# Простейший маршрут для Render health check
+# ----------------------------
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
 
 # ----------------------------
 # Запуск локально для отладки
