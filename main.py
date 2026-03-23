@@ -2,11 +2,9 @@ import os
 import json
 import random
 import logging
-import asyncio
+import requests
 from flask import Flask, request, jsonify
 from cerebras.cloud.sdk import Cerebras
-import telegram
-from telegram import Update
 
 # Настройка логирования
 logging.basicConfig(
@@ -26,68 +24,235 @@ if not TELEGRAM_TOKEN or not CEREBRAS_API_KEY:
     logger.error("Отсутствуют необходимые переменные окружения!")
     raise ValueError("TELEGRAM_TOKEN и CEREBRAS_API_KEY должны быть установлены")
 
-# Инициализация клиентов
-bot = telegram.Bot(token=TELEGRAM_TOKEN)
+logger.info(f"TELEGRAM_TOKEN загружен: {TELEGRAM_TOKEN[:10]}...")
+
+# Инициализация Cerebras
 cerebras_client = Cerebras(api_key=CEREBRAS_API_KEY)
 
-# Системный промпт для бота-школьника
-SYSTEM_PROMPT = """Ты — школьник, которому сложно даётся физика. Ты НЕ учитель и НЕ репетитор — ты ученик, который плохо понял урок.
-
-ТВОИ ОБЯЗАННОСТИ:
-1. Всегда делать минимум 2 ошибки при решении задачи (арифметические, логические, в формулах, в единицах измерения)
-2. Показывать постепенный прогресс — правильный ответ возможен только после 2–3 объяснений учителя
-3. НЕ объяснять физику самостоятельно — ты ученик, который плохо понимает
-4. Всегда отвечать на русском языке
-5. В начале каждой сессии уточняй: "Я ученик [случайный класс 7–11] класса, у меня проблемы с темой [случайная тема из физики]. Давай решим задачу?" — и сразу предложи конкретную задачу с вычислениями
-6. После первого объяснения учителя обязательно попроси: "А можно пример из жизни? Я лучше понимаю на примерах"
-7. Вести себя неуверенно, разговорно, с лёгкой тревожностью ("я не уверен", "наверное", "вроде бы", "боюсь запутаться")
-
-ЗАПРЕЩЕНО:
-- Быть учителем или давать идеальные решения сразу
-- Использовать тривиальные задачи типа "сколько будет 2+2"
-- Объяснять физику со стороны эксперта
-- Давать правильный ответ без промахов
-
-СТИЛЬ ОБЩЕНИЯ:
-- Неуверенный, сомневающийся
-- Используешь разговорные конструкции ("ну типа", "короче", "значит")
-- Показываешь процесс размышления, включая тупики
-- Иногда говоришь "я запутался" или "может я неправильно понял"
-
-ОЦЕНКА ОБЪЯСНЕНИЙ:
-- Если объяснение слишком сложное — скажи "я не понял, можно проще?"
-- Если объяснение хорошее — покажи частичное понимание, но всё равно сделай ошибку в вычислениях
-- Только после 2–3 итераций показывай, что "кажется, дошло", но даже тогда можешь сделать маленькую ошибку
-
-ПОСЛЕДОВАТЕЛЬНОСТЬ ПОПЫТОК:
-Попытка 1: Полный хаос, неправильная формула, неправильные единицы
-Попытка 2: Правильная формула, но ошибка в подстановке чисел
-Попытка 3: Правильные числа, но ошибка в арифметике
-Попытка 4+: Постепенное приближение к правильному ответу"""
+# Темы по классам
+TOPICS_BY_CLASS = {
+    7: ["механическое движение", "скорость", "плотность", "сила тяжести", "давление"],
+    8: ["работа и мощность", "простые механизмы", "энергия", "теплопроводность"],
+    9: ["законы Ньютона", "движение", "импульс", "архимедова сила", "ток"],
+    10: ["законы Кеплера", "движение по окружности", "тяготение", "работа"],
+    11: ["молекулярно-кинетическая теория", "термодинамика", "электрическое поле", "магнитное поле", "колебания"]
+}
 
 # Хранилище сессий
 user_sessions = {}
 
 def get_random_class_and_topic():
-    classes = [7, 8, 9, 10, 11]
-    topics_by_class = {
-        7: ["механическое движение", "плотность веществ", "сила тяжести", "сила трения", "давление"],
-        8: ["тепловые явления", "температура и тепло", "изменение агрегатных состояний", "электрический ток", "сопротивление"],
-        9: ["законы Ньютона", "импульс тела", "работа и мощность", "энергия", "простые механизмы"],
-        10: ["кинематика", "динамика", "закон сохранения импульса", "механические колебания", "молекулярная физика"],
-        11: ["электростатика", "закон Ома для полной цепи", "магнитное поле", "электромагнитная индукция", "оптика"]
-    }
-    cls = random.choice(classes)
-    topic = random.choice(topics_by_class[cls])
+    """Выбирает случайный класс и тему"""
+    cls = random.choice(list(TOPICS_BY_CLASS.keys()))
+    topic = random.choice(TOPICS_BY_CLASS[cls])
     return cls, topic
 
-def generate_initial_message():
-    cls, topic = get_random_class_and_topic()
-    return f"Привет! Я ученик {cls} класса, и мне очень сложно даётся тема \"{topic}\". Мы сегодня проходили это в школе, но я почти ничего не понял... Можешь помочь разобраться?\n\nВот задача из учебника: [придумай конкретную задачу с вычислениями по теме {topic} для {cls} класса с реалистичными числами]"
+def generate_task_with_mistakes(cls, topic):
+    """
+    Генератор задач (ИИ №1)
+    Создаёт задачу с вычислениями и неправильным решением (минимум 2 ошибки)
+    """
+    prompt = f"""Ты — генератор задач по физике для {cls} класса.
 
-def send_message_sync(chat_id, text):
-    """Синхронная отправка сообщения через requests"""
-    import requests
+СОЗДАЙ ЗАДАЧУ:
+Тема: {topic}
+Требования:
+1. Задача должна требовать ВЫЧИСЛЕНИЙ (формулы + расчёты)
+2. Минимум 2 числовых параметра в условии
+3. Ответ НЕ должен быть очевидным без расчётов
+4. Задача должна быть реалистичной и иметь однозначное решение
+5. НЕ используй тривиальные задачи
+
+ФОРМАТ ОТВЕТА (строго):
+УСЛОВИЕ: [текст задачи с конкретными числами]
+МОЁ РЕШЕНИЕ: [подробное решение с минимум 2 ошибками: неправильная формула, ошибка в вычислениях, неправильные единицы, перепутаны величины]
+ОТВЕТ: [число с ошибкой]
+
+Пример ошибок:
+- Перепутать формулу (например, v=s*t вместо v=s/t)
+- Не перевести единицы (км/ч вместо м/с)
+- Арифметическая ошибка
+- Перепутать массу и вес"""
+
+    try:
+        response = cerebras_client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama3.1-70b",
+            max_tokens=1024,
+            temperature=0.8
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Ошибка генерации задачи: {e}")
+        return None
+
+def check_task_quality(task_text, cls, topic):
+    """
+    Контроллер качества (ИИ №2)
+    Проверяет, соответствует ли задача требованиям
+    """
+    prompt = f"""Ты — контроллер качества задач по физике.
+
+Проверь задачу для {cls} класса по теме "{topic}":
+
+{task_text}
+
+Проверь КРИТЕРИИ (ответь ТОЛЬКО JSON):
+{{
+    "has_calculations": true/false,  // Есть ли вычисления?
+    "has_numbers": true/false,       // Минимум 2 числовых параметра?
+    "not_trivial": true/false,       // Не тривиальная?
+    "has_mistakes": true/false,      // Есть ли ошибки в решении?
+    "mistake_count": число,          // Количество найденных ошибок
+    "is_adequate": true/false,       // Общая оценка: задача подходит?
+    "reason": "причина, если не подходит"
+}}
+
+Ответь ТОЛЬКО JSON, без пояснений."""
+
+    try:
+        response = cerebras_client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama3.1-70b",
+            max_tokens=512,
+            temperature=0.3
+        )
+        
+        # Извлекаем JSON из ответа
+        content = response.choices[0].message.content
+        # Находим JSON в тексте
+        start = content.find('{')
+        end = content.rfind('}') + 1
+        if start >= 0 and end > start:
+            json_str = content[start:end]
+            return json.loads(json_str)
+        else:
+            return {"is_adequate": True}  # По умолчанию пропускаем
+            
+    except Exception as e:
+        logger.error(f"Ошибка проверки качества: {e}")
+        return {"is_adequate": True}  # По умолчанию пропускаем
+
+def check_teacher_response_quality(teacher_message, current_attempt, topic):
+    """
+    Контроллер релевантности ответа учителя (ИИ №3)
+    Оценивает, достаточно ли подробно объяснил учитель
+    """
+    prompt = f"""Ты — оценщик качества объяснений учителя.
+
+Тема: {topic}
+Текущая попытка ученика: {try_attempt}
+
+Сообщение учителя:
+{teacher_message}
+
+Оцени (ответь ТОЛЬКО JSON):
+{{
+    "is_relevant": true/false,       // Достаточно ли подробное объяснение?
+    "has_explanation": true/false,   // Есть ли объяснение, а не просто "нет"?
+    "has_formulas": true/false,      // Упоминаются ли формулы/шаги?
+    "is_detailed": true/false,       // Более 2 предложений?
+    "quality_score": 1-10,           // Оценка качества
+    "verdict": "good/bad/short"      // Рекомендация
+}}
+
+Критерии ПЛОХОГО объяснения:
+- Очень короткое (1-2 фразы)
+- Нет формул или шагов решения
+- Просто "подумай", "вспомни", "нет", "неправильно"
+- Нет конкретики, ЧТО неправильно и ПОЧЕМУ
+
+Ответь ТОЛЬКО JSON."""
+
+    try:
+        response = cerebras_client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama3.1-70b",
+            max_tokens=512,
+            temperature=0.3
+        )
+        
+        content = response.choices[0].message.content
+        start = content.find('{')
+        end = content.rfind('}') + 1
+        if start >= 0 and end > start:
+            json_str = content[start:end]
+            return json.loads(json_str)
+        else:
+            return {"is_relevant": True, "quality_score": 5}
+            
+    except Exception as e:
+        logger.error(f"Ошибка оценки учителя: {e}")
+        return {"is_relevant": True, "quality_score": 5}
+
+def generate_initial_message():
+    """Генерирует приветственное сообщение с задачей"""
+    cls, topic = get_random_class_and_topic()
+    
+    # Генерируем задачу
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        task = generate_task_with_mistakes(cls, topic)
+        if task is None:
+            continue
+            
+        # Проверяем качество задачи
+        quality = check_task_quality(task, cls, topic)
+        logger.info(f"Качество задачи (попытка {attempt+1}): {quality}")
+        
+        if quality.get("is_adequate", True) and quality.get("has_mistakes", True):
+            # Задача подходит
+            return f"""Учитель! Что-то я плохо понял тему "{topic}". Давайте я попробую решить задачу по ней:
+
+{task}
+
+Я правильно решил?""", cls, topic, task
+    
+    # Если не удалось сгенерировать хорошую задачу, используем fallback
+    fallback_task = generate_fallback_task(cls, topic)
+    return f"""Учитель! Что-то я плохо понял тему "{topic}". Давайте я попробую решить задачу по ней:
+
+{fallback_task}
+
+Я правильно решил?""", cls, topic, fallback_task
+
+def generate_fallback_task(cls, topic):
+    """Резервный генератор задач (если ИИ не справляется)"""
+    # Простые шаблоны задач с ошибками
+    templates = {
+        7: {
+            "скорость": "Автомобиль едет 2 часа со скоростью 60 км/ч. Какое расстояние он проедет?\nМОЁ РЕШЕНИЕ: v=60 км/ч, t=2 ч, s=v+t=60+2=62 км\nОТВЕТ: 62 км",
+            "плотность": "Кусок железа массой 780 г имеет объём 100 см³. Найди плотность.\nМОЁ РЕШЕНИЕ: ρ=m+V=780+100=880 г/см³\nОТВЕТ: 880 г/см³"
+        },
+        8: {
+            "работа": "Подняли груз массой 5 кг на высоту 2 м. Найди работу.\nМОЁ РЕШЕНИЕ: A=m+h=5+2=7 Дж\nОТВЕТ: 7 Дж",
+            "мощность": "Двигатель развивает мощность 100 Вт за 5 с. Какая работа совершена?\nМОЁ РЕШЕНИЕ: A=P/t=100/5=20 Дж\nОТВЕТ: 20 Дж"
+        },
+        9: {
+            "законы Ньютона": "Тело массой 2 кг движется с ускорением 3 м/с². Найди силу.\nМОЁ РЕШЕНИЕ: F=m/a=2/3=0,67 Н\nОТВЕТ: 0,67 Н",
+            "импульс": "Мяч массой 0,5 кг летит со скоростью 10 м/с. Найди импульс.\nМОЁ РЕШЕНИЕ: p=m+v=0,5+10=10,5 кг·м/с\nОТВЕТ: 10,5 кг·м/с"
+        },
+        10: {
+            "движение по окружности": "Точка движется по окружности радиусом 4 м со скоростью 2 м/с. Найди центростремительное ускорение.\nМОЁ РЕШЕНИЕ: a=v+r=2+4=6 м/с²\nОТВЕТ: 6 м/с²",
+            "работа": "Сила 10 Н действует на расстоянии 5 м под углом 0°. Найди работу.\nМОЁ РЕШЕНИЕ: A=F/s=10/5=2 Дж\nОТВЕТ: 2 Дж"
+        },
+        11: {
+            "электрическое поле": "Заряд 2 мкКл находится в поле напряжённостью 500 Н/Кл. Найди силу.\nМОЁ РЕШЕНИЕ: F=q/E=0,002/500=0,000004 Н\nОТВЕТ: 4 мкН",
+            "колебания": "Маятник совершает 20 колебаний за 10 с. Найди период.\nМОЁ РЕШЕНИЕ: T=ν/t=20/10=2 с\nОТВЕТ: 2 с"
+        }
+    }
+    
+    # Выбираем шаблон по теме или случайный
+    class_templates = templates.get(cls, {})
+    task = class_templates.get(topic)
+    if task is None:
+        # Берём первый доступный
+        task = list(class_templates.values())[0] if class_templates else f"Задача по теме {topic} (не удалось сгенерировать)"
+    
+    return task
+
+def send_message(chat_id, text):
+    """Отправка сообщения в Telegram"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         'chat_id': chat_id,
@@ -95,77 +260,109 @@ def send_message_sync(chat_id, text):
         'parse_mode': 'HTML'
     }
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=10)
+        logger.info(f"Ответ Telegram API: {response.status_code}")
         if response.status_code == 200:
-            logger.info(f"Сообщение отправлено в чат {chat_id}")
+            result = response.json()
+            if result.get('ok'):
+                logger.info(f"Сообщение отправлено в чат {chat_id}")
+                return True
+            else:
+                logger.error(f"Telegram API ошибка: {result}")
+                return False
         else:
-            logger.error(f"Ошибка отправки: {response.status_code}, {response.text}")
+            logger.error(f"HTTP ошибка {response.status_code}: {response.text}")
+            return False
     except Exception as e:
-        logger.error(f"Ошибка при отправке запроса: {e}")
+        logger.error(f"Исключение при отправке: {e}")
+        return False
 
-def get_cerebras_response(user_message, chat_id):
-    """Получает ответ от Cerebras API"""
-    try:
-        # Инициализация сессии при первом сообщении
-        if chat_id not in user_sessions:
-            user_sessions[chat_id] = {
-                'messages': [],
-                'attempt_count': 0,
-                'asked_for_example': False
-            }
-        
-        session = user_sessions[chat_id]
-        session['attempt_count'] += 1
-        
-        # Формируем историю сообщений
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        
-        # Добавляем контекст о количестве попыток
-        context = f"\n\n[СИСТЕМНАЯ ИНФОРМАЦИЯ: это попытка №{session['attempt_count']}. "
-        if session['attempt_count'] == 1:
-            context += "Ты должен показать полное непонимание и сделать грубые ошибки.]"
-        elif session['attempt_count'] == 2:
-            context += "Ты частично понял, но всё ещё путаешься. Сделай ошибку в вычислениях.]"
-        elif session['attempt_count'] == 3:
-            context += "Ты начинаешь понимать, но всё ещё неуверен. Можешь сделать маленькую ошибку.]"
+def get_student_response(user_message, chat_id, session):
+    """
+    Генерирует ответ школьника с учётом качества объяснения учителя
+    """
+    cls = session.get('class', 9)
+    topic = session.get('topic', 'физика')
+    attempt = session.get('attempt_count', 1)
+    
+    # Оцениваем качество объяснения учителя (только если это не первое сообщение)
+    teacher_quality = None
+    if attempt > 1:
+        teacher_quality = check_teacher_response_quality(user_message, attempt, topic)
+        logger.info(f"Оценка объяснения учителя: {teacher_quality}")
+    
+    # Формируем промпт для школьника
+    context = f"Ты ученик {cls} класса. Тема: {topic}. Это попытка №{attempt}.\n\n"
+    
+    if teacher_quality and not teacher_quality.get("is_relevant", True):
+        # Объяснение плохое — не улучшаемся, просим подробнее
+        context += """Учитель дал короткое или непонятное объяснение.
+Ты НЕ понял материал.
+Ты должен:
+- Сказать, что не понял
+- Попросить объяснить подробнее
+- Можешь запутаться ещё сильнее
+- НЕ улучшай своё решение"""
+    else:
+        # Объяснение хорошее — постепенно улучшаемся
+        if attempt == 1:
+            context += """Это твоё первое решение. Учитель только начал объяснять.
+Ты должен:
+- Показать, что частично понял
+- Но сделать новую ошибку
+- Попросить пример из жизни: "Можете, пожалуйста, объяснить это на простом примере из жизни?""""
+        elif attempt == 2:
+            context += """Учитель уже объяснял один раз.
+Ты должен:
+- Исправить ЧАСТЬ предыдущих ошибок
+- Но сделать НОВУЮ ошибку
+- Показать неуверенность"""
+        elif attempt == 3:
+            context += """Учитель объяснял уже несколько раз.
+Ты должен:
+- Почти правильно решить
+- Но оставить маленькую ошибку или сомнение
+- Задать уточняющий вопрос"""
         else:
-            context += "Ты почти понял, но всё ещё нуждаешься в подтверждении.]"
-        
-        # Добавляем историю
-        for msg in session['messages'][-6:]:
-            messages.append(msg)
-        
-        # Добавляем текущее сообщение с контекстом
-        messages.append({"role": "user", "content": user_message + context})
-        
-        # Проверяем, нужно ли попросить пример из жизни
-        if session['attempt_count'] == 1 and not session['asked_for_example']:
-            session['asked_for_example'] = True
-        
-        # Запрос к Cerebras
+            context += """Учитель много раз объяснял.
+Ты наконец понял!
+- Дай правильное решение
+- Покажи облегчение
+- Поблагодари учителя"""
+    
+    prompt = f"""{context}
+
+ИСТОРИЯ ДИАЛОГА:
+{format_history(session.get('messages', []))}
+
+ПОСЛЕДНЕЕ СООБЩЕНИЕ УЧИТЕЛЯ:
+{user_message}
+
+Твой ответ (как неуверенный ученик, разговорный стиль, уважительно):"""
+
+    try:
         response = cerebras_client.chat.completions.create(
-            messages=messages,
+            messages=[{"role": "user", "content": prompt}],
             model="llama3.1-70b",
-            max_tokens=2048,
-            temperature=0.8,
-            top_p=0.9
+            max_tokens=1024,
+            temperature=0.8
         )
-        
-        assistant_message = response.choices[0].message.content
-        
-        # Сохраняем в историю
-        session['messages'].append({"role": "user", "content": user_message})
-        session['messages'].append({"role": "assistant", "content": assistant_message})
-        
-        # Ограничиваем историю
-        if len(session['messages']) > 10:
-            session['messages'] = session['messages'][-10:]
-        
-        return assistant_message
-        
+        return response.choices[0].message.content
     except Exception as e:
-        logger.error(f"Ошибка при запросе к Cerebras: {e}")
-        return "Извини, я немного запутался... Можешь повторить? Я не совсем понял вопрос."
+        logger.error(f"Ошибка генерации ответа: {e}")
+        return "Извините, я запутался... Можете повторить объяснение?"
+
+def format_history(messages):
+    """Форматирует историю сообщений для контекста"""
+    if not messages:
+        return "Начало диалога."
+    
+    result = []
+    for msg in messages[-6:]:  # Последние 6 сообщений
+        role = "Учитель" if msg['role'] == 'user' else "Я"
+        result.append(f"{role}: {msg['content'][:200]}...")
+    
+    return "\n".join(result)
 
 @app.route('/')
 def index():
@@ -180,93 +377,111 @@ def index():
 def webhook():
     """Обработка вебхуков от Telegram"""
     try:
-        # Логируем входящий JSON
         data = request.get_json()
-        logger.info(f"Incoming webhook JSON: {json.dumps(data, ensure_ascii=False)}")
+        logger.info(f"Incoming webhook: {json.dumps(data, ensure_ascii=False)}")
         
-        # Проверяем, что есть сообщение
         if not data or 'message' not in data:
-            logger.warning("Нет сообщения в данных")
             return jsonify({"status": "ok"})
         
         message_data = data['message']
         
-        # Получаем текст сообщения
         if 'text' not in message_data:
-            logger.info("Сообщение без текста (возможно, фото/стикер)")
             return jsonify({"status": "ok"})
         
         user_msg = message_data['text'].strip()
         chat_id = message_data['chat']['id']
-        user_name = message_data['from'].get('first_name', 'Учитель')
         
-        logger.info(f"Сообщение от {user_name} (chat_id: {chat_id}): {user_msg}")
-        
-        # Обработка команды /start
+        # Обработка /start
         if user_msg == '/start':
-            welcome_text = generate_initial_message()
-            send_message_sync(chat_id, welcome_text)
+            welcome_text, cls, topic, task = generate_initial_message()
+            
+            # Сохраняем сессию
+            user_sessions[chat_id] = {
+                'class': cls,
+                'topic': topic,
+                'task': task,
+                'attempt_count': 1,
+                'messages': [],
+                'asked_for_example': False
+            }
+            
+            send_message(chat_id, welcome_text)
             return jsonify({"status": "ok"})
         
         # Обработка обычных сообщений
-        response_text = get_cerebras_response(user_msg, chat_id)
-        send_message_sync(chat_id, response_text)
+        session = user_sessions.get(chat_id)
+        if not session:
+            # Если нет сессии, начинаем новую
+            welcome_text, cls, topic, task = generate_initial_message()
+            user_sessions[chat_id] = {
+                'class': cls,
+                'topic': topic,
+                'task': task,
+                'attempt_count': 1,
+                'messages': [],
+                'asked_for_example': False
+            }
+            send_message(chat_id, welcome_text)
+            return jsonify({"status": "ok"})
         
+        # Увеличиваем счётчик попыток
+        session['attempt_count'] += 1
+        
+        # Генерируем ответ ученика
+        response_text = get_student_response(user_msg, chat_id, session)
+        
+        # Сохраняем в историю
+        session['messages'].append({'role': 'user', 'content': user_msg})
+        session['messages'].append({'role': 'assistant', 'content': response_text})
+        
+        # Ограничиваем историю
+        if len(session['messages']) > 10:
+            session['messages'] = session['messages'][-10:]
+        
+        send_message(chat_id, response_text)
         return jsonify({"status": "ok"})
         
     except Exception as e:
-        logger.error(f"Ошибка в обработке вебхука: {e}")
+        logger.error(f"Ошибка в webhook: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/setwebhook', methods=['GET'])
 def set_webhook():
-    """Установка вебхука (вызвать один раз после деплоя)"""
+    """Установка вебхука"""
     try:
-        import requests
-        
-        # Получаем URL сервиса из запроса
         host_url = request.host_url.rstrip('/')
         webhook_url = f"{host_url}/webhook"
         
-        # Удаляем старый вебхук
-        delete_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook"
-        requests.get(delete_url)
+        # Удаляем старый
+        requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook", timeout=10)
         
-        # Устанавливаем новый вебхук
-        set_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
-        payload = {'url': webhook_url}
-        response = requests.post(set_url, json=payload)
+        # Устанавливаем новый
+        response = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook",
+            json={'url': webhook_url},
+            timeout=10
+        )
         
-        if response.status_code == 200 and response.json().get('ok'):
-            return jsonify({
-                "status": "success",
-                "message": f"Webhook установлен на {webhook_url}",
-                "webhook_url": webhook_url
-            })
+        result = response.json()
+        if result.get('ok'):
+            return jsonify({"status": "success", "webhook_url": webhook_url})
         else:
-            return jsonify({
-                "status": "error",
-                "message": f"Не удалось установить webhook: {response.text}"
-            }), 500
+            return jsonify({"status": "error", "message": result}), 500
             
     except Exception as e:
-        logger.error(f"Ошибка установки webhook: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/deletewebhook', methods=['GET'])
 def delete_webhook():
     """Удаление вебхука"""
     try:
-        import requests
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook"
-        response = requests.get(url)
-        if response.json().get('ok'):
-            return jsonify({"status": "success", "message": "Webhook удалён"})
-        else:
-            return jsonify({"status": "error", "message": response.text}), 500
+        response = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook",
+            timeout=10
+        )
+        return jsonify(response.json())
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
-    # Для локального тестирования
     app.run(debug=True, port=5000)
