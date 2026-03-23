@@ -138,6 +138,10 @@ def reply_to_teacher(message):
     else:
         bot.send_message(chat_id, "Ох… кажется, теперь я понял! Спасибо 😅")
 
+@app.route("/")
+def index():
+    return "PhysicsStudentBot is running", 200
+   
 # Webhook endpoint
 @app.route("/webhook", methods=["POST"])
 def webhook():
