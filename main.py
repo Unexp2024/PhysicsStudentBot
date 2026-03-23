@@ -22,7 +22,7 @@ print("🔥 Flask init...")
 user_state = {}
 
 # -------------------------
-# Простейшая генерация задачи
+# Генерация задач
 # -------------------------
 PHYSICS_TOPICS = [
     "Движение точки", "Сила тяжести", "Электрическое поле",
@@ -66,24 +66,17 @@ def call_llm(messages, temperature=0.7):
         return response.json()["choices"][0]["message"]["content"]
     except Exception as e:
         print("LLM ERROR:", e)
-        # fallback: простая заготовка
         return "Учитель! Я плохо понял тему скорость. Я тут решил задачу, но запутался... Я правильно решил?"
 
 # -------------------------
-# Проверка ответа ученика
+# Проверка ответа пользователя
 # -------------------------
 def evaluate_student_response(user_msg, state):
-    """
-    Простейшая автоматическая оценка.
-    Проверяет, идёт ли речь о теме и попытке решения.
-    """
     if not user_msg.strip():
         return False
-    # ключевые слова темы
     topic_keywords = state.get("topic", "").lower().split()
     if any(k in user_msg.lower() for k in topic_keywords):
         return True
-    # или содержит математические термины
     math_terms = ["v=", "скорость", "масса", "сила", "ускорение", "t=", "расстояние", "градусов", "Н"]
     if any(term in user_msg for term in math_terms):
         return True
@@ -95,6 +88,10 @@ def evaluate_student_response(user_msg, state):
 @app.route("/")
 def home():
     return "OK"
+
+@app.route("/health")
+def health():
+    return "healthy", 200
 
 @app.route("/start", methods=["POST"])
 def start():
@@ -119,11 +116,9 @@ def webhook():
     if not state:
         return jsonify({"bot_message": "Сначала нажмите 'Старт'."})
     
-    # Оценка ответа пользователя
     success = evaluate_student_response(user_msg, state)
     feedback = "👍 Отлично, Вы направляете ученика к пониманию!" if success else "⚠️ Попробуйте ответить более по теме задачи."
     
-    # Генерация нового шага задачи, если нужно
     if success:
         topic, task_text = generate_task()
         state["topic"] = topic
@@ -140,4 +135,5 @@ def webhook():
 # Запуск локально
 # -------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)), debug=True)
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=True)
