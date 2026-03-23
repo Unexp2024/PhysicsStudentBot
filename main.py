@@ -52,36 +52,38 @@ def generate_task_with_mistakes(cls, topic):
     Генератор задач (ИИ №1)
     Создаёт задачу с вычислениями и неправильным решением (минимум 2 ошибки)
     """
-    prompt = f"""Ты — генератор задач по физике для {cls} класса.
+    prompt = f"""Ты — эксперт по физике для {cls} класса. Создай РЕАЛИСТИЧНУЮ задачу по теме "{topic}".
 
-СОЗДАЙ ЗАДАЧУ:
-Тема: {topic}
-Требования:
-1. Задача должна требовать ВЫЧИСЛЕНИЙ (формулы + расчёты)
-2. Минимум 2 числовых параметра в условии
-3. Ответ НЕ должен быть очевидным без расчётов
-4. Задача должна быть реалистичной и иметь однозначное решение
-5. НЕ используй тривиальные задачи
+ВАЖНО:
+- Задача должна быть из реальной жизни (спорт, транспорт, быт, природа)
+- Числа должны быть реалистичными (не 1 м, не 1000 км)
+- Минимум 2 числовых параметра В УСЛОВИИ
+- Должна требовать формулы и вычисления
+- Ответ неочевиден без расчёта
 
-ФОРМАТ ОТВЕТА (строго):
-УСЛОВИЕ: [текст задачи с конкретными числами]
-МОЁ РЕШЕНИЕ: [подробное решение с минимум 2 ошибками: неправильная формула, ошибка в вычислениях, неправильные единицы, перепутаны величины]
+ФОРМАТ (строго соблюдай):
+УСЛОВИЕ: [конкретная ситуация с числами, например: "Велосипедист едет со скоростью 12 км/ч 3 часа"]
+МОЁ РЕШЕНИЕ: [решение с 2-3 ошибками: неправильная формула, перепутаны единицы, арифметика]
 ОТВЕТ: [число с ошибкой]
 
-Пример ошибок:
-- Перепутать формулу (например, v=s*t вместо v=s/t)
-- Не перевести единицы (км/ч вместо м/с)
-- Арифметическая ошибка
-- Перепутать массу и вес"""
+Примеры ошибок:
+- v=s+t вместо v=s/t
+- км/ч не перевёл в м/с
+- перепутал массу и вес
+- ошибка в степени (r² как r)
+
+Создай задачу:"""
 
     try:
         response = cerebras_client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model="llama3.1-70b",
-            max_tokens=1024,
-            temperature=0.8
+            max_tokens=800,
+            temperature=0.9
         )
-        return response.choices[0].message.content
+        task = response.choices[0].message.content.strip()
+        logger.info(f"Сгенерированная задача: {task[:200]}...")
+        return task
     except Exception as e:
         logger.error(f"Ошибка генерации задачи: {e}")
         return None
@@ -99,12 +101,12 @@ def check_task_quality(task_text, cls, topic):
 
 Проверь КРИТЕРИИ (ответь ТОЛЬКО JSON):
 {{
-    "has_calculations": true/false,  // Есть ли вычисления?
-    "has_numbers": true/false,       // Минимум 2 числовых параметра?
-    "not_trivial": true/false,       // Не тривиальная?
-    "has_mistakes": true/false,      // Есть ли ошибки в решении?
-    "mistake_count": число,          // Количество найденных ошибок
-    "is_adequate": true/false,       // Общая оценка: задача подходит?
+    "has_calculations": true/false,
+    "has_numbers": true/false,
+    "not_trivial": true/false,
+    "has_mistakes": true/false,
+    "mistake_count": число,
+    "is_adequate": true/false,
     "reason": "причина, если не подходит"
 }}
 
@@ -118,49 +120,58 @@ def check_task_quality(task_text, cls, topic):
             temperature=0.3
         )
         
-        # Извлекаем JSON из ответа
         content = response.choices[0].message.content
-        # Находим JSON в тексте
         start = content.find('{')
         end = content.rfind('}') + 1
         if start >= 0 and end > start:
             json_str = content[start:end]
             return json.loads(json_str)
         else:
-            return {"is_adequate": True}  # По умолчанию пропускаем
+            return {"is_adequate": True}
             
     except Exception as e:
         logger.error(f"Ошибка проверки качества: {e}")
-        return {"is_adequate": True}  # По умолчанию пропускаем
+        return {"is_adequate": True}
 
-def check_teacher_response_quality(teacher_message, current_attempt, topic):
+def check_teacher_response_quality(teacher_message, attempt, topic):
     """
     Контроллер релевантности ответа учителя (ИИ №3)
-    Оценивает, достаточно ли подробно объяснил учитель
+    Оценивает, достаточно ли подробно и релевантно объяснил учитель
+    Возвращает оценку и флаг, стоит ли запрашивать пример из жизни
     """
     prompt = f"""Ты — оценщик качества объяснений учителя.
 
 Тема: {topic}
-Текущая попытка ученика: {try_attempt}
+Текущая попытка ученика: {attempt}
 
 Сообщение учителя:
 {teacher_message}
 
 Оцени (ответь ТОЛЬКО JSON):
 {{
-    "is_relevant": true/false,       // Достаточно ли подробное объяснение?
-    "has_explanation": true/false,   // Есть ли объяснение, а не просто "нет"?
-    "has_formulas": true/false,      // Упоминаются ли формулы/шаги?
-    "is_detailed": true/false,       // Более 2 предложений?
-    "quality_score": 1-10,           // Оценка качества
-    "verdict": "good/bad/short"      // Рекомендация
+    "is_relevant": true/false,
+    "is_helpful": true/false,
+    "has_explanation": true/false,
+    "has_formulas": true/false,
+    "is_detailed": true/false,
+    "quality_score": 1-10,
+    "should_ask_example": true/false,
+    "verdict": "good/medium/bad"
 }}
 
-Критерии ПЛОХОГО объяснения:
-- Очень короткое (1-2 фразы)
-- Нет формул или шагов решения
-- Просто "подумай", "вспомни", "нет", "неправильно"
-- Нет конкретики, ЧТО неправильно и ПОЧЕМУ
+Критерии:
+- is_relevant: объяснение действительно направлено на помощь в понимании темы (не просто "нет", "неправильно", "подумай")
+- is_helpful: содержит конкретные подсказки, формулы, шаги решения
+- should_ask_example: true ТОЛЬКО если is_relevant И is_helpful (после действительно полезного объяснения)
+
+Плохое объяснение (should_ask_example: false):
+- "Неправильно", "Подумай ещё", "Нет", "Учебник открой"
+- Очень короткое без конкретики
+
+Хорошее объяснение (should_ask_example: true):
+- Объясняет, что именно не так
+- Даёт формулы или подсказки
+- Показывает шаги решения
 
 Ответь ТОЛЬКО JSON."""
 
@@ -179,77 +190,104 @@ def check_teacher_response_quality(teacher_message, current_attempt, topic):
             json_str = content[start:end]
             return json.loads(json_str)
         else:
-            return {"is_relevant": True, "quality_score": 5}
+            return {"is_relevant": True, "is_helpful": True, "should_ask_example": True, "quality_score": 5}
             
     except Exception as e:
         logger.error(f"Ошибка оценки учителя: {e}")
-        return {"is_relevant": True, "quality_score": 5}
+        return {"is_relevant": True, "is_helpful": True, "should_ask_example": True, "quality_score": 5}
+
+def generate_smart_fallback(cls, topic):
+    """
+    Умный fallback — конкретные задачи с реалистичными числами и ошибками
+    """
+    # Случайные реалистичные числа
+    v = random.choice([12, 15, 18, 20, 24, 30])  # скорость км/ч
+    t = random.choice([0.5, 1, 1.5, 2, 2.5, 3])  # время ч
+    m = random.choice([2, 3, 5, 8, 10, 12])  # масса кг
+    h = random.choice([1, 1.5, 2, 2.5, 3, 4])  # высота м
+    F = random.choice([10, 20, 50, 100, 150, 200])  # сила Н
+    s = random.choice([5, 10, 20, 50, 100])  # расстояние м
+    a = random.choice([2, 3, 4, 5])  # ускорение м/с²
+    n = random.choice([10, 20, 30])  # количество
+    
+    fallbacks = {
+        7: {
+            "скорость": f"Велосипедист едет со скоростью {v} км/ч. За {t} ч он проедет?\nМОЁ РЕШЕНИЕ: s=v/t={v}/{t}={round(v/t, 1)} км\nОТВЕТ: {round(v/t, 1)} км",
+            "плотность": f"Кусок алюминия массой {m*270} г имеет объём {m} см³. Найди плотность.\nМОЁ РЕШЕНИЕ: ρ=m+V={m*270}+{m}={m*270+m} г/см³\nОТВЕТ: {m*270+m} г/см³",
+            "сила тяжести": f"Тело массой {m} кг падает. Сила тяжести?\nМОЁ РЕШЕНИЕ: F=m/m={m}/{m}=1 Н\nОТВЕТ: 1 Н",
+            "давление": f"Кирпич массой {m} кг лежит на площади {m*2} см². Давление?\nМОЁ РЕШЕНИЕ: p=m+S={m}+{m*2}={m*3} Па\nОТВЕТ: {m*3} Па",
+            "механическое движение": f"Поезд идёт {t} ч со скоростью {v*2} км/ч. Расстояние?\nМОЁ РЕШЕНИЕ: s=v-t={v*2}-{t}={v*2-t} км\nОТВЕТ: {v*2-t} км"
+        },
+        8: {
+            "работа и мощность": f"Поднимают груз массой {m} кг на высоту {h} м. Работа?\nМОЁ РЕШЕНИЕ: A=m+h={m}+{h}={m+h} Дж\nОТВЕТ: {m+h} Дж",
+            "энергия": f"Тело массой {m} кг движется со скоростью {v} м/с. Кинетическая энергия?\nМОЁ РЕШЕНИЕ: E=m+v={m}+{v}={m+v} Дж\nОТВЕТ: {m+v} Дж",
+            "простые механизмы": f"Сила {F} Н действует на рычаг, плечо {h} м. Момент силы?\nМОЁ РЕШЕНИЕ: M=F+h={F}+{h}={F+h} Н·м\nОТВЕТ: {F+h} Н·м",
+            "теплопроводность": f"Нагрели {m} кг воды от 20°C до 50°C. Теплота (c=4200)?\nМОЁ РЕШЕНИЕ: Q=c/t=4200/30=140 Дж\nОТВЕТ: 140 Дж"
+        },
+        9: {
+            "законы Ньютона": f"Тело массой {m} кг движется с ускорением {a} м/с². Сила?\nМОЁ РЕШЕНИЕ: F=m/a={m}/{a}={round(m/a, 1)} Н\nОТВЕТ: {round(m/a, 1)} Н",
+            "импульс": f"Мяч массой {m//2} кг летит со скоростью {v} м/с. Импульс?\nМОЁ РЕШЕНИЕ: p=m+v={m//2}+{v}={m//2+v} кг·м/с\nОТВЕТ: {m//2+v} кг·м/с",
+            "архимедова сила": f"Тело объёмом {m*10} см³ погружено в воду. Выталкивающая сила?\nМОЁ РЕШЕНИЕ: F=V+m={m*10}+{m}={m*11} Н\nОТВЕТ: {m*11} Н",
+            "движение": f"Мотоциклист едет {t} ч с ускорением {a} м/с². Ускорение?\nМОЁ РЕШЕНИЕ: a=v/t={v}/{t}={round(v/t, 1)} м/с²\nОТВЕТ: {round(v/t, 1)} м/с²",
+            "ток": f"Сила тока {a} А, сопротивление {m} Ом. Напряжение?\nМОЁ РЕШЕНИЕ: U=I+R={a}+{m}={a+m} В\nОТВЕТ: {a+m} В"
+        },
+        10: {
+            "движение по окружности": f"Точка движется по окружности R={h} м со скоростью {v//2} м/с. Центростремительное ускорение?\nМОЁ РЕШЕНИЕ: a=v+R={v//2}+{h}={v//2+h} м/с²\nОТВЕТ: {v//2+h} м/с²",
+            "тяготение": f"Тело массой {m} кг на высоте {h} м над Землёй. Сила тяжести (g=10)?\nМОЁ РЕШЕНИЕ: F=m/h={m}/{h}={round(m/h, 1)} Н\nОТВЕТ: {round(m/h, 1)} Н",
+            "работа": f"Сила {F} Н действует на расстоянии {s} м. Работа?\nМОЁ РЕШЕНИЕ: A=F/s={F}/{s}={round(F/s, 1)} Дж\nОТВЕТ: {round(F/s, 1)} Дж",
+            "законы Кеплера": f"Планета на расстоянии {s} млн км от Солнца. Период обращения?\nМОЁ РЕШЕНИЕ: T=R/v={s}/{v}={round(s/v, 1)} лет\nОТВЕТ: {round(s/v, 1)} лет"
+        },
+        11: {
+            "электрическое поле": f"Заряд {m//2} мкКл в поле E={F*10} Н/Кл. Сила?\nМОЁ РЕШЕНИЕ: F=q+E={m//2}+{F*10}={m//2+F*10} мкН\nОТВЕТ: {m//2+F*10} мкН",
+            "колебания": f"Маятник совершает {n} колебаний за {t*10} с. Период?\nМОЁ РЕШЕНИЕ: T=ν×t={n}×{t*10}={n*t*10} с\nОТВЕТ: {n*t*10} с",
+            "термодинамика": f"Газ получил {F*10} Дж теплоты и совершил работу {F} Дж. Изменение внутренней энергии?\nМОЁ РЕШЕНИЕ: ΔU=Q+W={F*10}+{F}={F*11} Дж\nОТВЕТ: {F*11} Дж",
+            "магнитное поле": f"Проводник длиной {h} м с током {a} А в поле B={m/10} Тл. Сила Ампера?\nМОЁ РЕШЕНИЕ: F=B/I={m/10}/{a}={round(m/(10*a), 2)} Н\nОТВЕТ: {round(m/(10*a), 2)} Н",
+            "молекулярно-кинетическая теория": f"В сосуде {m} моль газа при температуре {v*10} К. Давление (V={m} л)?\nМОЁ РЕШЕНИЕ: p=T/V={v*10}/{m}={v*10//m} Па\nОТВЕТ: {v*10//m} Па"
+        }
+    }
+    
+    class_tasks = fallbacks.get(cls, {})
+    task = class_tasks.get(topic)
+    
+    if task is None:
+        # Берём любую задачу из этого класса
+        task = list(class_tasks.values())[0] if class_tasks else f"Задача по теме {topic}"
+    
+    return task
 
 def generate_initial_message():
     """Генерирует приветственное сообщение с задачей"""
     cls, topic = get_random_class_and_topic()
     
-    # Генерируем задачу
+    # Пытаемся сгенерировать задачу ИИ
+    task = None
     max_attempts = 3
+    
     for attempt in range(max_attempts):
-        task = generate_task_with_mistakes(cls, topic)
-        if task is None:
+        raw_task = generate_task_with_mistakes(cls, topic)
+        if raw_task is None:
             continue
-            
-        # Проверяем качество задачи
-        quality = check_task_quality(task, cls, topic)
-        logger.info(f"Качество задачи (попытка {attempt+1}): {quality}")
         
-        if quality.get("is_adequate", True) and quality.get("has_mistakes", True):
-            # Задача подходит
-            return f"""Учитель! Что-то я плохо понял тему "{topic}". Давайте я попробую решить задачу по ней:
+        # Проверяем, что задача содержит числа в условии
+        if "УСЛОВИЕ:" in raw_task and any(char.isdigit() for char in raw_task.split("УСЛОВИЕ:")[1].split("МОЁ")[0]):
+            # Проверяем качество
+            quality = check_task_quality(raw_task, cls, topic)
+            logger.info(f"Попытка {attempt+1}, качество: {quality}")
+            
+            if quality.get("is_adequate", True):
+                task = raw_task
+                break
+    
+    # Если ИИ не справился — используем умный fallback
+    if task is None:
+        logger.warning("ИИ не справился, используем fallback")
+        task = generate_smart_fallback(cls, topic)
+    
+    return f"""Учитель! Что-то я плохо понял тему "{topic}". Давайте я попробую решить задачу по ней:
 
 {task}
 
 Я правильно решил?""", cls, topic, task
-    
-    # Если не удалось сгенерировать хорошую задачу, используем fallback
-    fallback_task = generate_fallback_task(cls, topic)
-    return f"""Учитель! Что-то я плохо понял тему "{topic}". Давайте я попробую решить задачу по ней:
-
-{fallback_task}
-
-Я правильно решил?""", cls, topic, fallback_task
-
-def generate_fallback_task(cls, topic):
-    """Резервный генератор задач (если ИИ не справляется)"""
-    # Простые шаблоны задач с ошибками
-    templates = {
-        7: {
-            "скорость": "Автомобиль едет 2 часа со скоростью 60 км/ч. Какое расстояние он проедет?\nМОЁ РЕШЕНИЕ: v=60 км/ч, t=2 ч, s=v+t=60+2=62 км\nОТВЕТ: 62 км",
-            "плотность": "Кусок железа массой 780 г имеет объём 100 см³. Найди плотность.\nМОЁ РЕШЕНИЕ: ρ=m+V=780+100=880 г/см³\nОТВЕТ: 880 г/см³"
-        },
-        8: {
-            "работа": "Подняли груз массой 5 кг на высоту 2 м. Найди работу.\nМОЁ РЕШЕНИЕ: A=m+h=5+2=7 Дж\nОТВЕТ: 7 Дж",
-            "мощность": "Двигатель развивает мощность 100 Вт за 5 с. Какая работа совершена?\nМОЁ РЕШЕНИЕ: A=P/t=100/5=20 Дж\nОТВЕТ: 20 Дж"
-        },
-        9: {
-            "законы Ньютона": "Тело массой 2 кг движется с ускорением 3 м/с². Найди силу.\nМОЁ РЕШЕНИЕ: F=m/a=2/3=0,67 Н\nОТВЕТ: 0,67 Н",
-            "импульс": "Мяч массой 0,5 кг летит со скоростью 10 м/с. Найди импульс.\nМОЁ РЕШЕНИЕ: p=m+v=0,5+10=10,5 кг·м/с\nОТВЕТ: 10,5 кг·м/с"
-        },
-        10: {
-            "движение по окружности": "Точка движется по окружности радиусом 4 м со скоростью 2 м/с. Найди центростремительное ускорение.\nМОЁ РЕШЕНИЕ: a=v+r=2+4=6 м/с²\nОТВЕТ: 6 м/с²",
-            "работа": "Сила 10 Н действует на расстоянии 5 м под углом 0°. Найди работу.\nМОЁ РЕШЕНИЕ: A=F/s=10/5=2 Дж\nОТВЕТ: 2 Дж"
-        },
-        11: {
-            "электрическое поле": "Заряд 2 мкКл находится в поле напряжённостью 500 Н/Кл. Найди силу.\nМОЁ РЕШЕНИЕ: F=q/E=0,002/500=0,000004 Н\nОТВЕТ: 4 мкН",
-            "колебания": "Маятник совершает 20 колебаний за 10 с. Найди период.\nМОЁ РЕШЕНИЕ: T=ν/t=20/10=2 с\nОТВЕТ: 2 с"
-        }
-    }
-    
-    # Выбираем шаблон по теме или случайный
-    class_templates = templates.get(cls, {})
-    task = class_templates.get(topic)
-    if task is None:
-        # Берём первый доступный
-        task = list(class_templates.values())[0] if class_templates else f"Задача по теме {topic} (не удалось сгенерировать)"
-    
-    return task
 
 def send_message(chat_id, text):
     """Отправка сообщения в Telegram"""
@@ -284,41 +322,62 @@ def get_student_response(user_message, chat_id, session):
     cls = session.get('class', 9)
     topic = session.get('topic', 'физика')
     attempt = session.get('attempt_count', 1)
+    asked_for_example = session.get('asked_for_example', False)
     
-    # Оцениваем качество объяснения учителя (только если это не первое сообщение)
+    # Оцениваем качество объяснения учителя
     teacher_quality = None
+    should_ask_example = False
+    
     if attempt > 1:
         teacher_quality = check_teacher_response_quality(user_message, attempt, topic)
-        logger.info(f"Оценка объяснения учителя: {teacher_quality}")
+        logger.info(f"Оценка учителя: {teacher_quality}")
+        
+        # Запрашиваем пример из жизни ТОЛЬКО если:
+        # 1. Это первое релевантное объяснение
+        # 2. Объяснение действительно полезное
+        # 3. Мы ещё не просили пример
+        if (teacher_quality.get("should_ask_example", False) and 
+            not asked_for_example and 
+            teacher_quality.get("is_relevant", False) and
+            teacher_quality.get("is_helpful", False)):
+            should_ask_example = True
+            session['asked_for_example'] = True
     
     # Формируем промпт для школьника
     context = f"Ты ученик {cls} класса. Тема: {topic}. Это попытка №{attempt}.\n\n"
     
     if teacher_quality and not teacher_quality.get("is_relevant", True):
-        # Объяснение плохое — не улучшаемся, просим подробнее
-        context += """Учитель дал короткое или непонятное объяснение.
+        # Объяснение нерелевантное — не улучшаемся
+        context += """Учитель дал непонятное или слишком короткое объяснение.
 Ты НЕ понял материал.
 Ты должен:
 - Сказать, что не понял
-- Попросить объяснить подробнее
+- Попросить объяснить подробнее, что именно не так
 - Можешь запутаться ещё сильнее
 - НЕ улучшай своё решение"""
     else:
-        # Объяснение хорошее — постепенно улучшаемся
+        # Объяснение релевантное — постепенно улучшаемся
         if attempt == 1:
             context += """Это твоё первое решение. Учитель только начал объяснять.
 Ты должен:
 - Показать, что частично понял
 - Но сделать новую ошибку
-- Попросить пример из жизни: "Можете, пожалуйста, объяснить это на простом примере из жизни?"
+- Быть неуверенным"""
         elif attempt == 2:
-            context += """Учитель уже объяснял один раз.
+            if should_ask_example:
+                context += """Учитель дал хорошее объяснение. Ты начинаешь понимать.
 Ты должен:
 - Исправить ЧАСТЬ предыдущих ошибок
 - Но сделать НОВУЮ ошибку
-- Показать неуверенность"""
+- ОБЯЗАТЕЛЬНО спросить: "Можете, пожалуйста, объяснить это на простом примере из жизни?""""
+            else:
+                context += """Учитель объяснил, но не очень подробно.
+Ты должен:
+- Показать частичное понимание
+- Сделать ошибку в вычислениях
+- Попросить уточнить или объяснить подробнее"""
         elif attempt == 3:
-            context += """Учитель объяснял уже несколько раз.
+            context += """Учитель уже объяснял несколько раз.
 Ты должен:
 - Почти правильно решить
 - Но оставить маленькую ошибку или сомнение
@@ -338,7 +397,7 @@ def get_student_response(user_message, chat_id, session):
 ПОСЛЕДНЕЕ СООБЩЕНИЕ УЧИТЕЛЯ:
 {user_message}
 
-Твой ответ (как неуверенный ученик, разговорный стиль, уважительно):"""
+Твой ответ (как неуверенный ученик, разговорный стиль, уважительно, без "ты"):"""
 
     try:
         response = cerebras_client.chat.completions.create(
@@ -353,12 +412,12 @@ def get_student_response(user_message, chat_id, session):
         return "Извините, я запутался... Можете повторить объяснение?"
 
 def format_history(messages):
-    """Форматирует историю сообщений для контекста"""
+    """Форматирует историю сообщений"""
     if not messages:
         return "Начало диалога."
     
     result = []
-    for msg in messages[-6:]:  # Последние 6 сообщений
+    for msg in messages[-6:]:
         role = "Учитель" if msg['role'] == 'user' else "Я"
         result.append(f"{role}: {msg['content'][:200]}...")
     
@@ -395,7 +454,6 @@ def webhook():
         if user_msg == '/start':
             welcome_text, cls, topic, task = generate_initial_message()
             
-            # Сохраняем сессию
             user_sessions[chat_id] = {
                 'class': cls,
                 'topic': topic,
@@ -411,7 +469,6 @@ def webhook():
         # Обработка обычных сообщений
         session = user_sessions.get(chat_id)
         if not session:
-            # Если нет сессии, начинаем новую
             welcome_text, cls, topic, task = generate_initial_message()
             user_sessions[chat_id] = {
                 'class': cls,
@@ -427,7 +484,7 @@ def webhook():
         # Увеличиваем счётчик попыток
         session['attempt_count'] += 1
         
-        # Генерируем ответ ученика
+        # Генерируем ответ
         response_text = get_student_response(user_msg, chat_id, session)
         
         # Сохраняем в историю
@@ -452,10 +509,8 @@ def set_webhook():
         host_url = request.host_url.rstrip('/')
         webhook_url = f"{host_url}/webhook"
         
-        # Удаляем старый
         requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook", timeout=10)
         
-        # Устанавливаем новый
         response = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook",
             json={'url': webhook_url},
