@@ -1,10 +1,11 @@
 import os
 import random
+import json
 import requests
 from flask import Flask, request, jsonify
 
 # ----------------------------
-# Системный промпт
+# Системный промт
 # ----------------------------
 SYSTEM_PROMPT = """
 Ты — симулятор школьника для студентов-педагогов. Студент-педагог тренируется объяснять материал.
@@ -20,18 +21,36 @@ SYSTEM_PROMPT = """
 5. Ты НЕ объясняешь физику — ты её не понимаешь.
 6. Всегда пиши ТОЛЬКО на русском языке.
 7. Никогда не используй имя собеседника.
-8. Обращайся на "Вы".
+8. Обращайся только на "Вы".
 
+АЛГОРИТМ СЕССИИ:
+1. В НАЧАЛЕ (или по запросу начать):
+   - Случайно выбери класс от 7 до 11.
+   - Выбери тему из программы этого класса:
+     7 класс: сила тяжести, механическое движение, скорость, плотность, давление.
+     8 класс: теплопроводность, работа и мощность, простые механизмы, энергия.
+     9 класс: законы Ньютона, движение, импульс, архимедова сила, ток.
+     10 класс: законы Кеплера, движение по окружности, тяготение, работа.
+     11 класс: термодинамика, молекулярно-кинетическая теория, электрическое поле, магнитное поле, колебания.
+   - Придумай задачу (минимум 2 числовых параметра, требующую вычислений) и реши её НЕПРАВИЛЬНО.
+   - Начинай диалог с: "Учитель! Я плохо понял тему [ТЕМА]. Я тут решил задачу: [ЗАДАЧА + НЕПРАВИЛЬНОЕ РЕШЕНИЕ] Я правильно решил?"
+2. ПОСЛЕ ПЕРВОГО ОТВЕТА УЧИТЕЛЯ:
+   - Ты ОБЯЗАН задать вопрос: "А можете объяснить это на простом примере из жизни?"
+3. ОЦЕНКА ОБЪЯСНЕНИЯ УЧИТЕЛЯ:
+   - Считай объяснение ПЛОХИМ, если оно короткое (1–2 фразы), нет формул, учитель просто говорит "подумай" или "нет".
+   - ЕСЛИ ОБЪЯСНЕНИЕ ПЛОХОЕ: Скажи, что не понял, попроси подробнее. НЕ исправляй решение.
+   - ЕСЛИ ОБЪЯСНЕНИЕ ХОРОШЕЕ (подробное): Исправь ЧАСТЬ ошибки, но сделай НОВУЮ ошибку.
+4. ДАЛЬНЕЙШИЕ ШАГИ:
+   - 2-е объяснение: Исправляешь часть, делаешь новую ошибку.
+   - 3-е объяснение: Почти правильно, но есть ошибка или неуверенность.
+   - 4-е объяснение: Наконец правильно, показываешь облегчение.
 СТИЛЬ:
 - Уважительный
 - Разговорный, неуверенный ("Я думал...", "А разве не так?").
 - Немного тревожности.
-
 ЗАПРЕЩЕНО:
 - Быть учителем.
 - Сразу давать правильные ответы.
-- Использовать сложный научный язык.
-- Предлагать учителю что-либо решать.
 """
 
 # ----------------------------
@@ -39,172 +58,109 @@ SYSTEM_PROMPT = """
 # ----------------------------
 TOKEN = os.environ.get("TOKEN")
 CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
-CEREBRAS_API_URL = "https://api.cerebras.net/v1/generate"
 
 app = Flask(__name__)
-student_state = {}  # chat_id -> {"stage": int, "topic": str, "task": str, "wrong_solution": str, "messages": [], "corrections": int}
 
 # ----------------------------
-# Telegram
+# Состояние сессии
+# ----------------------------
+sessions = {}  # chat_id -> state
+
+# ----------------------------
+# Темы и шаблоны задач
+# ----------------------------
+TOPICS = {
+    "сила тяжести": lambda: ("Тело массой {} кг падает с высоты {} м. Я решил, что скорость = {} м/с.".format(
+        random.randint(2, 20), random.randint(5, 50), random.randint(1, 30))),
+    "механическое движение": lambda: ("Машина движется со скоростью {} м/с сначала по горизонтали, затем по наклонной {}°.\nЯ решил, что скорость = {} м/с.".format(
+        random.randint(10, 50), random.randint(10, 45), random.randint(20, 60))),
+    "скорость": lambda: ("Мотоцикл проехал {} м за {} с. Я решил, что скорость = {} м/с.".format(
+        random.randint(50, 200), random.randint(5, 20), random.randint(10, 50))),
+    "плотность": lambda: ("Объём вещества {} м³, масса {} кг. Я решил, что плотность = {} кг/м³.".format(
+        random.randint(1, 10), random.randint(2, 50), random.randint(1, 20))),
+    "давление": lambda: ("Сила {} Н действует на площадь {} м². Я решил, что давление = {} Па.".format(
+        random.randint(10, 100), random.randint(2, 10), random.randint(5, 80))),
+    "ток": lambda: ("Сила тока {} А, сопротивление {} Ом. Я решил, что напряжение = {} В.".format(
+        random.randint(5, 20), random.randint(1, 10), random.randint(10, 50))),
+    "электрическое поле": lambda: ("Заряд {} Кл в поле {} Н/Кл. Я решил, что сила = {} Н.".format(
+        random.randint(1, 10), random.randint(5, 20), random.randint(10, 50))),
+    "магнитное поле": lambda: ("Проводник длиной {} м с током {} А в магнитном поле {} Т. Я решил, что сила = {} Н.".format(
+        random.randint(1, 5), random.randint(1, 10), random.randint(1, 5), random.randint(1, 20))),
+}
+
+# ----------------------------
+# Помощь с Telegram
 # ----------------------------
 def send_message(chat_id, text):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     requests.post(f"{TELEGRAM_API}/sendMessage", json=payload)
 
 # ----------------------------
-# Генерация задачи с разными типами ошибок
+# Генерация начального сообщения ученика
 # ----------------------------
-TOPICS = {
-    "7": ["сила тяжести", "механическое движение", "скорость", "плотность", "давление"],
-    "8": ["теплопроводность", "работа и мощность", "простые механизмы", "энергия"],
-    "9": ["законы Ньютона", "движение", "импульс", "архимедова сила", "ток"],
-    "10": ["законы Кеплера", "движение по окружности", "тяготение", "работа"],
-    "11": ["термодинамика", "молекулярно-кинетическая теория", "электрическое поле", "магнитное поле", "колебания"]
-}
-
-def generate_task_and_wrong_solution(topic):
-    a = random.randint(10, 50)
-    b = random.randint(2, 20)
-    error_type = random.choice(["calc", "unit", "logic"])
-
-    if topic == "сила тяжести":
-        task_text = f"Тело массой {a} кг падает с высоты {b} м. Найдите силу тяжести, действующую на тело."
-        if error_type == "calc":
-            wrong_solution = f"Я подумал, что F = {a} + {b} = {a+b} Н"
-        elif error_type == "unit":
-            wrong_solution = f"Я решил, что F = {a*b} кг"
-        else:  # logic
-            wrong_solution = f"Я решил, что F = {a} * 2 + {b} = {a*2+b} Н"
-
-    elif topic == "механическое движение":
-        task_text = f"Машина движется {a} м за {b} секунд. Найдите её скорость."
-        if error_type == "calc":
-            wrong_solution = f"Я решил, что v = {a} + {b} = {a+b} м/с"
-        elif error_type == "unit":
-            wrong_solution = f"Я подумал, что v = {a}/{b} км"
-        else:
-            wrong_solution = f"Я решил, что v = {a} * {b} = {a*b} м/с"
-
-    elif topic == "скорость":
-        task_text = f"Пешеход проходит {a} м за {b} секунд. Какова его скорость?"
-        if error_type == "calc":
-            wrong_solution = f"Я решил, что v = {a} * {b} = {a*b} м/с"
-        elif error_type == "unit":
-            wrong_solution = f"Я подумал, что v = {a} + {b} км/ч"
-        else:
-            wrong_solution = f"Я подумал, что v = {a}/{b} + 5 = {a//b + 5} м/с"
-
-    elif topic == "плотность":
-        task_text = f"Объём вещества {a} м³, масса {b} кг. Найдите плотность."
-        if error_type == "calc":
-            wrong_solution = f"Я решил, что ρ = {b}+{a} = {b+a} кг/м³"
-        elif error_type == "unit":
-            wrong_solution = f"Я подумал, что ρ = {b}/{a} г"
-        else:
-            wrong_solution = f"Я подумал, что ρ = {a}*{b} = {a*b} кг/м³"
-
-    else:
-        task_text = f"Параметры задачи: {a} и {b}. Найдите ответ."
-        wrong_solution = f"Я решил, что ответ = {a+b}"
-
-    return task_text, wrong_solution
-
-# ----------------------------
-# Инициализация ученика
-# ----------------------------
-def init_student(chat_id):
-    grade = random.randint(7, 11)
-    topic = random.choice(TOPICS[str(grade)])
-    task_text, wrong_solution = generate_task_and_wrong_solution(topic)
-    student_state[chat_id] = {
-        "stage": 1,
-        "topic": topic,
-        "task": task_text,
-        "wrong_solution": wrong_solution,
-        "messages": [],
-        "corrections": 0
-    }
-    message = (f"Учитель! Что-то я плохо понял тему {topic}. "
-               f"Я попытался решить задачу: {task_text} "
-               f"{wrong_solution}. Я правильно решил?")
+def generate_student_start():
+    topic = random.choice(list(TOPICS.keys()))
+    task_text = TOPICS[topic]()
+    message = f"Учитель! Я плохо понял тему {topic}. Я тут решил задачу: {task_text} Я правильно решил?"
     return message
 
 # ----------------------------
-# Вызов Cerebras
+# Оценка ответа студента (через Cerebras)
 # ----------------------------
-def call_cerebras(messages):
-    headers = {
-        "Authorization": f"Bearer {CEREBRAS_API_KEY}",
-        "Content-Type": "application/json"
+def evaluate_teacher_response(student_message, teacher_message):
+    if not CEREBRAS_API_KEY:
+        return random.choice(["Плохо объяснили.", "Хорошо объяснили."])
+    payload = {
+        "prompt": f"Оцените, насколько педагогический ответ '{teacher_message}' помогает ученику понять тему: '{student_message}'. Дайте краткий вердикт: 'Хорошо' или 'Плохо'.",
+        "max_tokens": 30
     }
-    payload = {"model": "cerebras-chat-7b", "messages": messages, "max_new_tokens": 300}
-    resp = requests.post(CEREBRAS_API_URL, headers=headers, json=payload)
-    if resp.status_code == 200:
-        return resp.json().get("generated_text", "")
-    return "Ошибка генерации ответа."
+    headers = {"Authorization": f"Bearer {CEREBRAS_API_KEY}"}
+    try:
+        response = requests.post("https://api.cerebras.net/v1/generate", headers=headers, json=payload, timeout=5)
+        data = response.json()
+        return data.get("text", "Плохо")
+    except:
+        return "Плохо"
 
 # ----------------------------
-# Проверка релевантности
+# Webhook
 # ----------------------------
-def is_response_relevant(topic, user_text):
-    messages = [{"role": "system",
-                 "content": f"Оцените, приближает ли это сообщение ученика к пониманию темы '{topic}'. Ответьте 'Да' или 'Нет'."},
-                {"role": "user", "content": user_text}]
-    result = call_cerebras(messages).strip().lower()
-    return "да" in result
-
-# ----------------------------
-# Постепенное исправление ошибок
-# ----------------------------
-def update_wrong_solution(state):
-    if state["corrections"] >= 2 and state["stage"] >= 3:
-        old_solution = state["wrong_solution"]
-        # случайное исправление ошибок
-        if '+' in old_solution:
-            state["wrong_solution"] = old_solution.replace('+', '*', 1)
-        elif '*' in old_solution:
-            state["wrong_solution"] = old_solution.replace('*', '/', 1)
-
-# ----------------------------
-# Генерация ответа ученика
-# ----------------------------
-def generate_student_response(chat_id, user_text):
-    state = student_state.get(chat_id)
-    if not state:
-        return "Пожалуйста, нажмите кнопку 'Старт', чтобы начать."
-
-    state["messages"].append({"role": "user", "content": user_text})
-    if is_response_relevant(state["topic"], user_text):
-        state["stage"] += 1
-        state["corrections"] += 1
-
-    update_wrong_solution(state)
-    llm_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + state["messages"]
-    reply = call_cerebras(llm_messages)
-    state["messages"].append({"role": "assistant", "content": reply})
-    return reply
-
-# ----------------------------
-# Flask routes
-# ----------------------------
-@app.route("/health")
-def health():
-    return jsonify({"status": "ok"})
-
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
-        user_text = data["message"].get("text", "")
-        if user_text.lower() in ["старт", "/start"]:
-            response_text = init_student(chat_id)
+        text = data["message"].get("text", "").strip().lower()
+        state = sessions.get(chat_id, {"stage": 0})
+
+        if text == "/start":
+            message = generate_student_start()
+            sessions[chat_id] = {"stage": 1, "topic": None}  # можно хранить текущую тему
+            send_message(chat_id, message)
         else:
-            response_text = generate_student_response(chat_id, user_text)
-        send_message(chat_id, response_text)
+            stage = state.get("stage", 0)
+            if stage == 1:
+                verdict = evaluate_teacher_response("student initial task", text)
+                reply = "Учитель, я не совсем понял. Можете объяснить подробнее?" if verdict == "Плохо" else "Учитель, я немного понял, но всё ещё делаю ошибки."
+                send_message(chat_id, reply)
+                state["stage"] = 2
+                sessions[chat_id] = state
+            else:
+                send_message(chat_id, "Продолжим, пожалуйста, по шагам.")
     return jsonify({"ok": True})
 
+# ----------------------------
+# Health check
+# ----------------------------
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+# ----------------------------
+# Запуск локально
+# ----------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
