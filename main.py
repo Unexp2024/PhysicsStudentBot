@@ -1,93 +1,67 @@
-import os
-import random
+# main.py
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# -------------------------
-# Состояние пользователя
-# -------------------------
+# Хранилище состояния пользователей (для простоты — в памяти)
 user_state = {}
 
-# -------------------------
-# Генерация задач
-# -------------------------
-PHYSICS_TOPICS = [
-    "Движение точки", "Сила тяжести", "Электрическое поле",
-    "Ток", "Плотность", "Архимедова сила"
-]
-
-TASK_TEMPLATES = [
-    "Маленький груз весом {mass} кг под действием силы тяжести движется по горизонтальной плоскости со скоростью {v0} м/с. Если сила трения равна {f} Н, а коэффициент трения {mu}, то какая скорость груза будет в конце {t} секунд?",
-    "Объект массой {mass} кг падает с высоты {h} м. Определите скорость при падении.",
-    "Мяч бросают под углом {angle}° с начальной скоростью {v0} м/с. Найдите расстояние по горизонтали до удара о землю."
-]
-
-def generate_task():
-    topic = random.choice(PHYSICS_TOPICS)
-    template = random.choice(TASK_TEMPLATES)
-    task_text = template.format(
-        mass=random.randint(1, 20),
-        v0=random.randint(1, 20),
-        f=random.randint(5, 15),
-        mu=round(random.uniform(0.1, 0.5), 2),
-        t=random.randint(1,5),
-        h=random.randint(5,30),
-        angle=random.choice([30,45,60])
-    )
-    return topic, task_text
-
-# -------------------------
-# Проверка ответа пользователя
-# -------------------------
-def evaluate_student_response(user_msg, state):
-    if not user_msg.strip():
-        return False
-    topic_keywords = state.get("topic", "").lower().split()
-    if any(k in user_msg.lower() for k in topic_keywords):
-        return True
-    math_terms = ["v=", "скорость", "масса", "сила", "ускорение", "t=", "расстояние", "градусов", "Н"]
-    if any(term in user_msg for term in math_terms):
+# Простейшая проверка решения ученика
+def evaluate_student_response(response_text, state):
+    """
+    Простая логика: если в ответе есть слово из темы, считаем успешным.
+    """
+    topic = state.get("topic", "").lower()
+    if topic and topic.lower() in response_text.lower():
         return True
     return False
 
-# -------------------------
-# Маршруты
-# -------------------------
+# Генератор задач (демо)
+def generate_task():
+    # Здесь можно подключить более сложный генератор
+    topic = "Движение точки"
+    task_text = "Маленький груз весом 2 кг движется по горизонтали со скоростью 5 м/с. \
+Если сила трения 10 Н, а коэффициент трения 0,3, какая скорость через 2 секунды?"
+    return topic, task_text
+
 @app.route("/")
-def home():
-    return "OK"
+def index():
+    return "PhysicsStudentBot работает!"
 
 @app.route("/health")
 def health():
-    return "healthy", 200
-
-@app.route("/start", methods=["POST"])
-def start():
-    user_id = request.json.get("user_id", "anon")
-    topic, task_text = generate_task()
-    user_state[user_id] = {"topic": topic, "task": task_text, "step": 1}
-    
-    message = (
-        f"Учитель! Я плохо понял тему \"{topic}\".\n\n"
-        f"Я тут решил задачу:\n\n{task_text}\n\n"
-        "РЕШЕНИЕ УЧЕНИКА:\n"
-        "Я попытался решить эту задачу, но не уверен в результате. Я правильно решил?"
-    )
-    return jsonify({"bot_message": message})
+    return "OK", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    user_id = request.json.get("user_id", "anon")
-    user_msg = request.json.get("message", "")
-    state = user_state.get(user_id)
-    
-    if not state:
-        return jsonify({"bot_message": "Сначала нажмите 'Старт'."})
-    
+    # Логируем JSON
+    try:
+        data = request.get_json(force=True)
+    except Exception as e:
+        print("Ошибка при разборе JSON:", e)
+        return jsonify({"bot_message": "⚠️ Некорректный JSON"}), 400
+
+    print("Incoming webhook JSON:", data)
+
+    user_id = data.get("user_id", "anon")
+    user_msg = data.get("message", "").strip()
+
+    # Создаем состояние пользователя, если его нет
+    if user_id not in user_state:
+        topic, task_text = generate_task()
+        user_state[user_id] = {"topic": topic, "task": task_text, "step": 1}
+
+    state = user_state[user_id]
+
+    # Проверка пустого сообщения
+    if not user_msg:
+        return jsonify({"bot_message": "⚠️ Я не получил сообщение. Пожалуйста, введите текст."})
+
+    # Оценка ответа ученика
     success = evaluate_student_response(user_msg, state)
-    feedback = "👍 Отлично, Вы направляете ученика к пониманию!" if success else "⚠️ Попробуйте ответить более по теме задачи."
-    
+    feedback = "👍 Отлично, вы движетесь в правильном направлении!" if success else "⚠️ Попробуйте ответить более по теме задачи."
+
+    # Если ответ успешен, генерируем следующую задачу
     if success:
         topic, task_text = generate_task()
         state["topic"] = topic
@@ -96,13 +70,10 @@ def webhook():
         next_task = f"\n\nНовая задача:\n{task_text}\nРЕШЕНИЕ УЧЕНИКА: Я попытался решить..."
     else:
         next_task = ""
-    
+
     bot_reply = f"{feedback}{next_task}"
     return jsonify({"bot_message": bot_reply})
 
-# -------------------------
-# Локальный запуск (dev)
-# -------------------------
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    print("🚀 APP STARTING...")
+    app.run(host="0.0.0.0", port=10000, debug=True)
