@@ -58,10 +58,14 @@ def ask_cerebras(messages):
         "temperature": 0.7
     }
 
-    response = requests.post(url, headers=headers, json=payload)
-    data = response.json()
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=8)
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
 
-    return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        print("CEREBRAS ERROR:", e)
+        return "Учитель! Что-то я совсем запутался… Можно ещё раз объяснить?"
 
 # ----------------------------
 # GENERATION LOGIC
@@ -110,14 +114,21 @@ def webhook():
         chat_id = data["message"]["chat"]["id"]
         user_text = data["message"].get("text", "")
 
-        # reset
-        if user_text.lower() in ["старт", "/start", "начать"]:
-            user_states[chat_id] = {"step": 0, "history": []}
-            response = generate_response(chat_id, "Начнём занятие")
-        else:
-            response = generate_response(chat_id, user_text)
+        # СРАЗУ отвечаем Telegram (важно!)
+        send_message(chat_id, "⏳ Думаю...")
 
-        send_message(chat_id, response)
+        try:
+            if user_text.lower() in ["старт", "/start", "начать"]:
+                user_states[chat_id] = {"step": 0, "history": []}
+                response = generate_response(chat_id, "Начнём занятие")
+            else:
+                response = generate_response(chat_id, user_text)
+
+            send_message(chat_id, response)
+
+        except Exception as e:
+            print("ERROR:", e)
+            send_message(chat_id, "Учитель… у меня что-то не получается 😥")
 
     return jsonify({"ok": True})
 
