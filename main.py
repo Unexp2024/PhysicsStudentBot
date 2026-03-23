@@ -49,25 +49,29 @@ def get_random_class_and_topic():
 
 def generate_task_with_mistakes(cls, topic):
     """
-    Генератор задач (ИИ №1) - УПРОЩЁННЫЙ
+    Генератор задач (ИИ №1) — с явными метками
     """
     prompt = f"""Ты — эксперт по физике для {cls} класса.
 
-Создай задачу по теме "{topic}" со следующими ОБЯЗАТЕЛЬНЫМИ элементами:
+Создай задачу по теме "{topic}".
 
-1. УСЛОВИЕ: конкретная ситуация из жизни с 2-3 числами (например: "Школьник тащит портфель массой 3 кг силой 20 Н на расстояние 500 м")
-2. МОЁ РЕШЕНИЕ: 
-   - Объясни, что означают буквы (A - работа, F - сила, s - расстояние)
-   - Дай НЕПРАВИЛЬНУЮ формулу (например: A = F / s вместо A = F × s)
-   - Покажи вычисление с ошибкой
-3. ОТВЕТ: число с ошибкой
+ОБЯЗАТЕЛЬНО используй этот формат (скопируй метки точно):
 
-Пример ошибок:
-- Перепутать умножение и деление
-- Сложить вместо умножения
-- Неправильные единицы (сложить Н + м = Нм вместо Н·м)
+УСЛОВИЕ: [конкретная ситуация из жизни с 2-3 числами]
 
-Напиши задачу:"""
+МОЁ РЕШЕНИЕ:
+1) [расшифровка букв: F — сила, m — масса и т.д.]
+2) [неправильная формула с ошибкой]
+3) [вычисление с ошибкой]
+
+ОТВЕТ: [число с ошибкой]
+
+Примеры ошибок:
+- A = F / s вместо A = F * s
+- сложение вместо умножения
+- перепутанные буквы в формуле
+
+Напиши задачу прямо сейчас:"""
 
     try:
         response = cerebras_client.chat.completions.create(
@@ -77,7 +81,7 @@ def generate_task_with_mistakes(cls, topic):
             temperature=0.9
         )
         task = response.choices[0].message.content.strip()
-        logger.info(f"ИИ сгенерировал задачу: {task[:400]}")
+        logger.info(f"ИИ сгенерировал: {task[:500]}")
         return task
     except Exception as e:
         logger.error(f"Ошибка генерации: {e}")
@@ -85,42 +89,31 @@ def generate_task_with_mistakes(cls, topic):
 
 def simple_check_task(task_text):
     """
-    Простая проверка без ИИ — только базовые критерии
+    Мягкая проверка — принимаем если есть числа и буквы и длина нормальная
     """
     checks = {
-        "has_condition": "УСЛОВИЕ:" in task_text.upper() or "условие:" in task_text.lower(),
-        "has_solution": "РЕШЕНИЕ:" in task_text.upper() or "решение:" in task_text.lower(),
         "has_numbers": any(c.isdigit() for c in task_text),
-        "has_letters": any(c.isalpha() and c.isupper() for c in task_text),  # Заглавные буквы (A, F, v)
-        "length_ok": len(task_text) > 100
+        "has_letters": len([c for c in task_text if c.isalpha() and c.isupper()]) >= 2,
+        "length_ok": len(task_text) > 80,
+        "has_words": "решение" in task_text.lower() or "ответ" in task_text.lower()
     }
     
     is_ok = all(checks.values())
-    logger.info(f"Проверка задачи: {checks}, результат: {is_ok}")
+    logger.info(f"Проверка: {checks}, результат: {is_ok}")
     return is_ok, checks
 
 def generate_smart_fallback(cls, topic):
     """
-    УЛУЧШЕННЫЙ fallback с пояснениями и разнообразными ошибками
+    Улучшенный fallback — задачи с понятными обозначениями
     """
-    # Генерируем случайные реалистичные числа
-    v = random.choice([12, 15, 18, 20, 24, 30, 36, 45])  # скорость км/ч
-    t = random.choice([0.5, 1, 1.5, 2, 2.5, 3, 4])  # время ч
-    m = random.choice([2, 3, 5, 8, 10, 12, 15, 20])  # масса кг
-    h = random.choice([1, 1.5, 2, 2.5, 3, 4, 5, 6])  # высота м
-    F = random.choice([10, 20, 50, 100, 150, 200, 250, 300])  # сила Н
-    s = random.choice([5, 10, 20, 50, 100, 150, 200, 300])  # расстояние м
-    a = random.choice([2, 3, 4, 5, 6, 8, 10])  # ускорение м/с²
-    n = random.choice([10, 20, 30, 40, 50])  # количество
-    
-    # Разные типы ошибок для разнообразия
-    error_types = [
-        "division_instead_multiplication",  # деление вместо умножения
-        "addition_instead_multiplication",  # сложение вместо умножения
-        "wrong_formula",  # неправильная формула
-        "unit_confusion",  # путаница с единицами
-        "arithmetic_error"  # арифметическая ошибка
-    ]
+    v = random.choice([12, 15, 18, 20, 24, 30, 36, 45])
+    t = random.choice([0.5, 1, 1.5, 2, 2.5, 3, 4])
+    m = random.choice([2, 3, 5, 8, 10, 12, 15, 20])
+    h = random.choice([1, 1.5, 2, 2.5, 3, 4, 5, 6])
+    F = random.choice([10, 20, 50, 100, 150, 200, 250, 300])
+    s = random.choice([5, 10, 20, 50, 100, 150, 200, 300])
+    a = random.choice([2, 3, 4, 5, 6, 8, 10])
+    n = random.choice([10, 20, 30, 40, 50])
     
     fallbacks = {
         7: {
@@ -230,13 +223,11 @@ def generate_smart_fallback(cls, topic):
     class_tasks = fallbacks.get(cls, {})
     tasks_for_topic = class_tasks.get(topic, [])
     
-    # Если есть несколько вариантов для темы — выбираем случайный
     if isinstance(tasks_for_topic, list) and tasks_for_topic:
         task = random.choice(tasks_for_topic)
     elif isinstance(tasks_for_topic, str):
         task = tasks_for_topic
     else:
-        # Берём любую задачу из этого класса
         all_tasks = []
         for t in class_tasks.values():
             if isinstance(t, list):
@@ -251,26 +242,19 @@ def generate_initial_message():
     """Генерирует приветственное сообщение с задачей"""
     cls, topic = get_random_class_and_topic()
     
-    # Пробуем ИИ-генерацию
     task = None
-    for attempt in range(2):  # Уменьшили до 2 попыток
-        raw_task = generate_task_with_mistakes(cls, topic)
-        if raw_task is None:
-            continue
-        
+    raw_task = generate_task_with_mistakes(cls, topic)
+    
+    if raw_task:
         is_ok, checks = simple_check_task(raw_task)
-        logger.info(f"Проверка ИИ-задачи: {checks}")
-        
         if is_ok:
             task = raw_task
             logger.info("ИИ-задача принята")
-            break
         else:
             logger.warning(f"ИИ-задача отклонена: {checks}")
     
-    # Если ИИ не справился — fallback
     if task is None:
-        logger.info("Используем улучшенный fallback")
+        logger.info("Используем fallback")
         task = generate_smart_fallback(cls, topic)
     
     return f"""Учитель! Что-то я плохо понял тему "{topic}". Давайте я попробую решить задачу по ней:
@@ -350,9 +334,10 @@ should_ask_example: true только при is_relevant И is_helpful.
         return {"is_relevant": True, "is_helpful": True, "should_ask_example": True}
 
 def get_student_response(user_message, chat_id, session):
-    """Генерирует ответ школьника"""
+    """Генерирует ответ школьника — ИСПРАВЛЕННЫЙ"""
     cls = session.get('class', 9)
     topic = session.get('topic', 'физика')
+    task = session.get('task', '')
     attempt = session.get('attempt_count', 1)
     asked_for_example = session.get('asked_for_example', False)
     
@@ -370,71 +355,115 @@ def get_student_response(user_message, chat_id, session):
             should_ask_example = True
             session['asked_for_example'] = True
     
-    context = f"Ты ученик {cls} класса. Тема: {topic}. Попытка №{attempt}.\n\n"
+    context = f"""Ты — ученик {cls} класса, решаешь КОНКРЕТНУЮ задачу по теме "{topic}".
+
+ТВОЯ ЗАДАЧА (которую ты уже пытался решить):
+{task[:400] if task else 'Задача по ' + topic}
+
+ПРАВИЛА:
+- Ты НЕ просишь объяснить всю тему с нуля
+- Ты говоришь о КОНКРЕТНОЙ задаче и своих ошибках в ней
+- Ты ссылаешься на числа из задачи
+- Ты показываешь, что частично понял, но запутался в деталях
+- Ты НЕ задаёшь общих вопросов "что такое термодинамика"
+- Ты задаёшь конкретные вопросы по формуле или вычислению
+
+Это твоя попытка №{attempt}.
+
+"""
     
     if teacher_quality and not teacher_quality.get("is_relevant", True):
-        context += """Учитель дал плохое объяснение.
+        context += """Учитель дал короткий или непонятный ответ.
 Ты должен:
-- Сказать, что не понял
-- Попросить объяснить подробнее
-- НЕ улучшай решение"""
+- Сказать, что не понял КОНКРЕТНО в задаче
+- Указать на свою ошибку в решении
+- Попросить объяснить, где именно ошибся
+- НЕ спрашивать про общую теорию, только про эту задачу
+
+Пример: "Я не понял, почему в формуле надо умножать, а не делить. У меня получилось 2 Дж, а правильно должно быть больше?"""
     else:
         if attempt == 1:
-            context += """Первое решение.
+            context += """Первый ответ учителя.
 Ты должен:
-- Показать частичное понимание
-- Сделать ошибку
-- Быть неуверенным"""
+- Сказать, что частично понял объяснение
+- Но сделать новую ошибку в той же задаче (перепутать другую формулу)
+- Спросить про конкретный шаг
+
+Пример: "А, то есть надо силу умножать на расстояние? Тогда A = 200 Н × 100 м = 20000 Дж? Правильно?"""
         elif attempt == 2:
             if should_ask_example:
-                context += """Хорошее объяснение учителя.
+                context += """Хорошее объяснение.
 Ты должен:
-- Исправить часть ошибок
-- Сделать новую ошибку
-- Спросить: 'Можете объяснить на примере из жизни?'"""
+- Исправить часть ошибок (но оставить другую)
+- ОБЯЗАТЕЛЬНО попросить пример из жизни
+- Связать пример с этой же задачей
+
+Пример: "Понял, формула A = F × s. А можете привести пример из жизни, когда работа совершается? Например, если я тащу чемодан..."""
             else:
                 context += """Объяснение неполное.
 Ты должен:
-- Показать частичное понимание
+- Показать, что запутался
 - Сделать ошибку
-- Попросить уточнить"""
+- Попросить уточнить конкретный момент
+
+Пример: "Я запутался... Значит, сначала надо найти силу? А как её найти, если масса 5 кг?"""
         elif attempt == 3:
-            context += """Уже объясняли несколько раз.
+            context += """Уже объясняли.
 Ты должен:
-- Почти правильно решить
-- Оставить маленькую ошибку"""
+- Почти правильно решить эту же задачу
+- Оставить маленькую ошибку (например, в единицах)
+- Показать, что волнуешься
+
+Пример: "Так, значит A = F × s = 200 × 100 = 20000... ээ... джоулей? Или килоджоулей? Я всё правильно посчитал?"""
         else:
-            context += """Учитель много объяснял.
-Ты понял!
-- Дай правильный ответ"""
+            context += """Много объяснений.
+Ты наконец понял!
+- Дай правильное решение этой задачи
+- Покажи облегчение
+- Поблагодари
+
+Пример: "Ой, кажется, дошло! A = F × s = 200 Н × 100 м = 20000 Дж = 20 кДж. Спасибо, теперь понятно!"""
     
     prompt = f"""{context}
 
-История:
+ИСТОРИЯ ДИАЛОГА (по теме задачи):
 {format_history(session.get('messages', []))}
 
-Последнее сообщение учителя:
+ПОСЛЕДНЕЕ СООБЩЕНИЕ УЧИТЕЛЯ:
 {user_message}
 
-Твой ответ (неуверенный ученик, без "ты"):"""
+ТВОЙ ОТВЕТ:
+- Только про эту конкретную задачу
+- Ссылайся на числа из условия
+- Не спрашивай общие вещи про тему
+- Будь неуверенным, но конкретным
+- Без слова "ты" (используйте/вы)"""
 
     try:
         response = cerebras_client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model="llama3.1-8b",
-            max_tokens=800,
-            temperature=0.8
+            max_tokens=600,
+            temperature=0.7
         )
         return response.choices[0].message.content
     except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        return "Извините, не понял... Можете повторить?"
+        logger.error(f"Ошибка генерации ответа: {e}")
+        return f"Извините, я не совсем понял... В моей задаче с силой {random.choice([50, 100, 150])} Н и расстоянием {random.choice([10, 20, 50])} м — я правильно посчитал работу?"
 
 def format_history(messages):
-    """Форматирует историю"""
+    """Форматирует историю диалога"""
     if not messages:
-        return "Начало."
-    return "\n".join([f"{'Учитель' if m['role']=='user' else 'Я'}: {m['content'][:150]}" for m in messages[-4:]])
+        return "Начало разговора."
+    
+    recent = messages[-4:]
+    formatted = []
+    for msg in recent:
+        role = "Учитель" if msg['role'] == 'user' else "Я (ученик)"
+        content = msg['content'][:120] + "..." if len(msg['content']) > 120 else msg['content']
+        formatted.append(f"{role}: {content}")
+    
+    return "\n".join(formatted)
 
 @app.route('/')
 def index():
