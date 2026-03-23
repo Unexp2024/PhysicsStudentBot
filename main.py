@@ -1,8 +1,9 @@
 import os
-import random
 import json
 import requests
 from flask import Flask, request, jsonify
+import openai
+import random
 
 # ----------------------------
 # Системный промт
@@ -65,15 +66,15 @@ SYSTEM_PROMPT = """
 # Конфигурация
 # ----------------------------
 TOKEN = os.environ.get("TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
-TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}" if TOKEN else None
+TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
+OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
+openai.api_key = OPENAI_KEY
 
 # ----------------------------
 # Flask приложение
 # ----------------------------
 app = Flask(__name__)
 
-# Простейший маршрут для Render health check
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
@@ -82,26 +83,27 @@ def health():
 # Функции для Telegram
 # ----------------------------
 def send_message(chat_id, text):
-    if not TELEGRAM_API:
-        print("Ошибка: TELEGRAM_API не настроен")
-        return
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML"
-    }
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     requests.post(f"{TELEGRAM_API}/sendMessage", json=payload)
 
 def generate_student_response(user_text):
     """
-    Заглушка: случайная "ошибка ученика"
+    Генерирует ответ ученика через OpenAI, соблюдая SYSTEM_PROMPT
     """
-    sample_responses = [
-        "Учитель! Что-то я плохо понял тему скорости. Я посчитал, что v = 10 * 5 = 60 м/с. Я правильно решил?",
-        "Учитель! Я вроде решил задачу про силу, но получилось F = 5 + 20 = 40 Н. Я правильно?",
-        "Учитель! Попробовал задачу по давлению: P = 100 / 2 = 30 Па. Я правильно решил?"
-    ]
-    return random.choice(sample_responses)
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_text}
+            ],
+            temperature=0.9,
+            max_tokens=300
+        )
+        return response['choices'][0]['message']['content']
+    except Exception as e:
+        # fallback
+        return "Учитель! Я что-то запутался и не знаю, что делать 😅"
 
 # ----------------------------
 # Webhook для Telegram
@@ -117,8 +119,8 @@ def webhook():
     return jsonify({"ok": True})
 
 # ----------------------------
-# Запуск приложения
+# Запуск локально для отладки
 # ----------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))  # Render подставит свой PORT
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
