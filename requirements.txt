@@ -1,4 +1,2 @@
-flask
-pyTelegramBotAPI
-openai
-gunicorn
+Flask==2.3.4
+gunicorn==25.1.0
