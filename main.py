@@ -1,9 +1,8 @@
 import os
+import random
 import json
 import requests
 from flask import Flask, request, jsonify
-import openai
-import random
 
 # ----------------------------
 # Системный промт
@@ -22,44 +21,6 @@ SYSTEM_PROMPT = """
 5. Ты НЕ объясняешь физику — ты её не понимаешь.
 6. Всегда пиши ТОЛЬКО на русском языке.
 7. Никогда не используй имя собеседника.
-
-АЛГОРИТМ СЕССИИ:
-1. В НАЧАЛЕ (или по запросу начать):
-   - Случайно выбери класс от 7 до 11.
-   - Выбери тему из программы этого класса:
-     7 класс: сила тяжести, механическое движение, скорость, плотность, давление.
-     8 класс: теплопроводность, работа и мощность, простые механизмы, энергия.
-     9 класс: законы Ньютона, движение, импульс, архимедова сила, ток.
-     10 класс: законы Кеплера, движение по окружности, тяготение, работа.
-     11 класс: термодинамика, молекулярно-кинетическая теория, электрическое поле, магнитное поле, колебания.
-   - Придумай задачу (минимум 2 числовых параметра, требующую вычислений).
-   - Реши её НЕПРАВИЛЬНО.
-   - Начинай диалог с: "Учитель! Что-то я плохо понял тему [ТЕМА]. Давайте я попробую решить задачу по ней: [ЗАДАЧА + НЕПРАВИЛЬНОЕ РЕШЕНИЕ] Я правильно решил?"
-
-2. ПОСЛЕ ПЕРВОГО ОТВЕТА УЧИТЕЛЯ:
-   - Ты ОБЯЗАН задать вопрос: "А можете объяснить это на простом примере из жизни?"
-
-3. ОЦЕНКА ОБЪЯСНЕНИЯ УЧИТЕЛЯ:
-   - Считай объяснение ПЛОХИМ, если оно короткое (1–2 фразы), нет формул, учитель просто говорит "подумай" или "нет".
-   - ЕСЛИ ОБЪЯСНЕНИЕ ПЛОХОЕ: Скажи, что не понял, попроси подробнее. НЕ исправляй решение.
-   - ЕСЛИ ОБЪЯСНЕНИЕ ХОРОШЕЕ (подробное): Исправь ЧАСТЬ ошибки, но сделай НОВУЮ ошибку.
-
-4. ДАЛЬНЕЙШИЕ ШАГИ:
-   - 2-е объяснение: Исправляешь часть, делаешь новую ошибку.
-   - 3-е объяснение: Почти правильно, но есть ошибка или неуверенность.
-   - 4-е объяснение: Наконец правильно, показываешь облегчение.
-
-СТИЛЬ:
-- Уважительный
-- Разговорный, неуверенный ("Я думал...", "А разве не так?").
-- Немного тревожности.
-
-ЗАПРЕЩЕНО:
-- Быть учителем.
-- Сразу давать правильные ответы.
-- Использовать сложный научный язык.
-- Обращаться на "ты" (используй "Вы").
-- Отправлять пользователю какой-либо текст до того как ты сгенерировал "Учитель! Что-то я плохо понял тему [ТЕМА]. Давайте я попробую решить задачу по ней: [ЗАДАЧА + НЕПРАВИЛЬНОЕ РЕШЕНИЕ] Я правильно решил?"
 """
 
 # ----------------------------
@@ -67,43 +28,89 @@ SYSTEM_PROMPT = """
 # ----------------------------
 TOKEN = os.environ.get("TOKEN")
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
-OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
-openai.api_key = OPENAI_KEY
 
 # ----------------------------
 # Flask приложение
 # ----------------------------
 app = Flask(__name__)
 
-@app.route("/health")
-def health():
-    return jsonify({"status": "ok"})
+# Простая память диалогов: chat_id → история
+dialogs = {}
 
 # ----------------------------
-# Функции для Telegram
+# Темы и задачи
 # ----------------------------
-def send_message(chat_id, text):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    requests.post(f"{TELEGRAM_API}/sendMessage", json=payload)
+CLASSES = {
+    7: ["сила тяжести", "механическое движение", "скорость", "плотность", "давление"],
+    8: ["теплопроводность", "работа и мощность", "простые механизмы", "энергия"],
+    9: ["законы Ньютона", "движение", "импульс", "архимедова сила", "ток"],
+    10: ["законы Кеплера", "движение по окружности", "тяготение", "работа"],
+    11: ["термодинамика", "молекулярно-кинетическая теория", "электрическое поле", "магнитное поле", "колебания"]
+}
 
-def generate_student_response(user_text):
-    """
-    Генерирует ответ ученика через OpenAI, соблюдая SYSTEM_PROMPT
-    """
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_text}
-            ],
-            temperature=0.9,
-            max_tokens=300
-        )
-        return response['choices'][0]['message']['content']
-    except Exception as e:
-        # fallback
-        return "Учитель! Я что-то запутался и не знаю, что делать 😅"
+# Генерация задачи с ошибкой
+def generate_task_with_mistake(class_number, topic):
+    # два случайных числа для задачи
+    a = random.randint(2, 20)
+    b = random.randint(5, 50)
+    # простая "ошибочная формула"
+    if "скорость" in topic:
+        # ошибка: умножение неверное
+        value = a * b + random.randint(1, 5)  # ошибка
+        task_text = f"v = {a} * {b} + {random.randint(1,5)} = {value} м/с"
+    elif "сила" in topic:
+        value = a + b + random.randint(1,10)
+        task_text = f"F = {a} + {b} + {random.randint(1,10)} = {value} Н"
+    elif "давление" in topic:
+        value = a / b + random.randint(1,5)
+        task_text = f"P = {a} / {b} + {random.randint(1,5)} = {value} Па"
+    else:
+        value = a + b  # универсальная ошибка
+        task_text = f"{topic}: {a} + {b} = {value}"
+    return task_text
+
+# ----------------------------
+# Логика генерации ответа ученика
+# ----------------------------
+def generate_student_response(chat_id, user_text):
+    # Инициализация диалога
+    if chat_id not in dialogs:
+        # Случайный класс и тема
+        class_number = random.randint(7, 11)
+        topic = random.choice(CLASSES[class_number])
+        task = generate_task_with_mistake(class_number, topic)
+        dialogs[chat_id] = {
+            "step": 1,
+            "class": class_number,
+            "topic": topic,
+            "last_task": task
+        }
+        return f"Учитель! Что-то я плохо понял тему {topic}. Давайте я попробую решить задачу по ней: {task} Я правильно решил?"
+
+    # Обработка следующих шагов
+    dialog = dialogs[chat_id]
+    step = dialog["step"]
+    topic = dialog["topic"]
+
+    if step == 1:
+        response = "А можете объяснить это на простом примере из жизни?"
+        dialog["step"] += 1
+    elif step == 2:
+        # частично исправляем ошибку, делаем новую
+        task = dialog["last_task"]
+        new_task = task.replace("м/с", "км/ч") if "м/с" in task else task
+        response = f"Я подумал и вроде исправил часть: {new_task}, но всё равно что-то не так?"
+        dialog["last_task"] = new_task
+        dialog["step"] += 1
+    elif step == 3:
+        response = f"Учитель, я почти понял, но я сделал маленькую ошибку в {topic}."
+        dialog["step"] += 1
+    else:
+        response = f"Кажется, теперь я понял правильно задачу по {topic}! Спасибо!"
+        # очищаем историю после полного понимания
+        dialogs.pop(chat_id)
+
+    return response
 
 # ----------------------------
 # Webhook для Telegram
@@ -114,9 +121,27 @@ def webhook():
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
         user_text = data["message"].get("text", "")
-        response_text = generate_student_response(user_text)
+        response_text = generate_student_response(chat_id, user_text)
         send_message(chat_id, response_text)
     return jsonify({"ok": True})
+
+# ----------------------------
+# Отправка сообщений
+# ----------------------------
+def send_message(chat_id, text):
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    requests.post(f"{TELEGRAM_API}/sendMessage", json=payload)
+
+# ----------------------------
+# Простейший маршрут для Render health check
+# ----------------------------
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
 
 # ----------------------------
 # Запуск локально для отладки
