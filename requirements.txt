@@ -1,4 +1,4 @@
-pyTelegramBotAPI
-cerebras-cloud-sdk
 flask
+pyTelegramBotAPI
+openai
 gunicorn
