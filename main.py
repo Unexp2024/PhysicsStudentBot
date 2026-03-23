@@ -4,46 +4,40 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# =========================
-# CONFIG
-# =========================
 TOKEN = os.environ.get("TOKEN")
 CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
-# =========================
-# MEMORY (state)
-# =========================
 sessions = {}
 
 # =========================
 # TELEGRAM
 # =========================
 def send_message(chat_id, text):
-    requests.post(f"{TELEGRAM_API}/sendMessage", json={
-        "chat_id": chat_id,
-        "text": text
-    })
-
+    requests.post(
+        f"{TELEGRAM_API}/sendMessage",
+        json={"chat_id": chat_id, "text": text}
+    )
 
 # =========================
-# LLM CALL (CEREBRAS)
+# LLM CALL
 # =========================
-def call_llm(messages):
+def call_llm(messages, temperature=0.7):
     try:
         response = requests.post(
             "https://api.cerebras.ai/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {CEREBRAS_API_KEY}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
             },
             json={
                 "model": "llama3.1-8b",
                 "messages": messages,
-                "temperature": 0.7
+                "temperature": temperature,
+                "max_tokens": 700
             },
-            timeout=20
+            timeout=25
         )
 
         data = response.json()
@@ -55,86 +49,144 @@ def call_llm(messages):
 
 
 # =========================
-# VALIDATE TASK (LLM)
+# VALIDATE STRUCTURE
 # =========================
-def validate_task(task_text):
+def validate_structure(text):
+    if not text:
+        return False
+
+    required = [
+        "Я плохо понял тему",
+        "ЗАДАЧА:",
+        "ЧТО НАЙТИ:",
+        "РЕШЕНИЕ УЧЕНИКА:",
+        "Я правильно решил?"
+    ]
+
+    for r in required:
+        if r not in text:
+            return False
+
+    return True
+
+
+# =========================
+# LLM TASK CHECKER
+# =========================
+def validate_physics(task):
     messages = [
         {
             "role": "system",
             "content": """
-Ты проверяешь задачу по физике.
+Проверь задачу по физике.
 
-Ответь строго:
+Ответь только:
 VALID или INVALID
 
 Критерии:
-- есть все необходимые данные
-- задача решаема
-- нет пропущенных величин
+- задача физически корректна
+- все необходимые параметры заданы
+- задача имеет однозначное решение
+- нет бессмысленных формулировок
 """
         },
-        {"role": "user", "content": task_text}
+        {
+            "role": "user",
+            "content": task
+        }
     ]
 
-    result = call_llm(messages)
-    return result and "VALID" in result
+    result = call_llm(messages, temperature=0)
+
+    if not result:
+        return False
+
+    return "VALID" in result
 
 
 # =========================
-# GENERATE TASK
+# GENERATE STUDENT MESSAGE
 # =========================
-def generate_task():
-    for _ in range(5):
+def generate_student_problem():
+    for _ in range(6):
+
         messages = [
             {
                 "role": "system",
                 "content": """
-Сгенерируй задачу по школьной физике.
+Ты школьник 7-10 класса, который плохо понимает физику.
 
-СТРОГО:
-1. Сначала "ЗАДАЧА:"
-(полное условие с числами)
+Сгенерируй сообщение учителю.
 
-2. Потом "ЧТО НАЙТИ:"
+СТРОГО В ФОРМАТЕ:
+
+Учитель! Я плохо понял тему <укажи тему>.
+
+Я тут решил задачу:
+
+ЗАДАЧА:
+(полное условие задачи, как в учебнике, все параметры заданы)
+
+ЧТО НАЙТИ:
 (одна величина)
 
-3. Потом "РЕШЕНИЕ УЧЕНИКА:"
-(НЕПРАВИЛЬНОЕ, минимум 2 ошибки)
+РЕШЕНИЕ УЧЕНИКА:
+(неправильное решение с типичными школьными ошибками:
+неправильная формула, ошибка в вычислениях или путаница единиц)
 
-4. Используй реальные формулы
-5. Задача должна быть решаема
+Я правильно решил?
 
-Пиши на русском.
+ТРЕБОВАНИЯ:
+- задача должна быть физически корректной
+- все данные должны быть указаны
+- задача должна иметь решение
+- НЕ придумывай странные рассуждения
+- стиль школьника
 """
             }
         ]
 
-        task = call_llm(messages)
+        text = call_llm(messages)
 
-        if task and validate_task(task):
-            return task
+        if not validate_structure(text):
+            continue
 
-    return "Не получилось сгенерировать задачу..."
+        if not validate_physics(text):
+            continue
 
+        return text
 
-# =========================
-# START MESSAGE
-# =========================
-def start_session(chat_id):
-    task = generate_task()
-
-    sessions[chat_id] = {
-        "stage": 0,
-        "task": task
-    }
-
-    return f"""Учитель! Я плохо понял тему.
+    # fallback
+    return """Учитель! Я плохо понял тему импульс.
 
 Я тут решил задачу:
 
-{task}
+ЗАДАЧА:
+Тело массой 2 кг движется со скоростью 3 м/с.
 
-Я правильно решил?"""
+ЧТО НАЙТИ:
+Импульс тела.
+
+РЕШЕНИЕ УЧЕНИКА:
+Я подумал, что импульс это масса плюс скорость.
+Поэтому 2 + 3 = 5.
+
+Я правильно решил?
+"""
+
+
+# =========================
+# START SESSION
+# =========================
+def start_session(chat_id):
+    msg = generate_student_problem()
+
+    sessions[chat_id] = {
+        "stage": 0,
+        "task": msg
+    }
+
+    return msg
 
 
 # =========================
@@ -147,16 +199,18 @@ def evaluate_teacher(user_text, task):
             "content": """
 Ты оцениваешь объяснение учителя.
 
-Ответь строго одним словом:
-GOOD или BAD
+Ответь только:
+GOOD
+или
+BAD
 
-GOOD:
-- объясняет по теме
-- есть логика
+GOOD если:
+- объяснение по теме
 - помогает понять
+- есть логика
 
-BAD:
-- короткий ответ
+BAD если:
+- коротко
 - не объясняет
 - не по теме
 """
@@ -164,21 +218,25 @@ BAD:
         {
             "role": "user",
             "content": f"""
-ЗАДАЧА:
+Задача ученика:
 {task}
 
-ОТВЕТ УЧИТЕЛЯ:
+Ответ учителя:
 {user_text}
 """
         }
     ]
 
-    result = call_llm(messages)
-    return "GOOD" in result if result else False
+    result = call_llm(messages, temperature=0)
+
+    if not result:
+        return False
+
+    return "GOOD" in result
 
 
 # =========================
-# STUDENT RESPONSE
+# STUDENT PROGRESSION
 # =========================
 def student_reply(chat_id, user_text):
     session = sessions.get(chat_id)
@@ -189,25 +247,24 @@ def student_reply(chat_id, user_text):
     stage = session["stage"]
     task = session["task"]
 
-    is_good = evaluate_teacher(user_text, task)
+    good = evaluate_teacher(user_text, task)
 
-    if not is_good:
-        return "Я не очень понял... Можете объяснить подробнее?"
+    if not good:
+        return "Я всё равно не очень понял... Можете объяснить подробнее?"
 
-    # GOOD explanation → progression
-    session["stage"] += 1
+    stage += 1
+    session["stage"] = stage
 
-    if session["stage"] == 1:
-        return "А можете объяснить это на простом примере из жизни?"
+    if stage == 1:
+        return "А можно объяснить это ещё проще?"
 
-    elif session["stage"] == 2:
-        return "Кажется, я начинаю понимать... но всё равно путаюсь..."
+    if stage == 2:
+        return "Кажется, я начинаю понимать..."
 
-    elif session["stage"] == 3:
-        return "Я почти понял, но не уверен, правильно ли думаю..."
+    if stage == 3:
+        return "Ааа, теперь понял! Спасибо!"
 
-    else:
-        return "Ааа, теперь понял! Спасибо! Теперь вроде всё сходится!"
+    return "Спасибо! Теперь я понял тему."
 
 
 # =========================
