@@ -65,9 +65,8 @@ SYSTEM_PROMPT = """
 # Конфигурация
 # ----------------------------
 TOKEN = os.environ.get("TOKEN")
-CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
-TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
+TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}" if TOKEN else None
 
 # ----------------------------
 # Flask приложение
@@ -83,6 +82,9 @@ def health():
 # Функции для Telegram
 # ----------------------------
 def send_message(chat_id, text):
+    if not TELEGRAM_API:
+        print("Ошибка: TELEGRAM_API не настроен")
+        return
     payload = {
         "chat_id": chat_id,
         "text": text,
@@ -92,9 +94,8 @@ def send_message(chat_id, text):
 
 def generate_student_response(user_text):
     """
-    Здесь можно интегрировать CEREBRAS API для генерации ответа
+    Заглушка: случайная "ошибка ученика"
     """
-    # Простейшая заглушка: случайная "ошибка ученика"
     sample_responses = [
         "Учитель! Что-то я плохо понял тему скорости. Я посчитал, что v = 10 * 5 = 60 м/с. Я правильно решил?",
         "Учитель! Я вроде решил задачу про силу, но получилось F = 5 + 20 = 40 Н. Я правильно?",
@@ -116,8 +117,8 @@ def webhook():
     return jsonify({"ok": True})
 
 # ----------------------------
-# Запуск локально для отладки
+# Запуск приложения
 # ----------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 5000))  # Render подставит свой PORT
     app.run(host="0.0.0.0", port=port)
