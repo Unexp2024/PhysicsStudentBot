@@ -136,7 +136,7 @@ def generate_response(chat_id, user_text):
 
     # ВАЖНО: первый шаг принудительно старт
     if state["step"] == 0:
-    messages.append({
+  messages.append({
         "role": "system",
         "content": """
 Сейчас НАЧАЛО занятия.
