@@ -65,7 +65,7 @@ SYSTEM_PROMPT = """Ты — школьник, которому сложно да
 Попытка 3: Правильные числа, но ошибка в арифметике
 Попытка 4+: Постепенное приближение к правильному ответу"""
 
-# Хранилище сессий (в продакшене лучше использовать Redis, но для бесплатного хостинга хватит словаря)
+# Хранилище сессий
 user_sessions = {}
 
 def get_random_class_and_topic():
@@ -85,12 +85,23 @@ def generate_initial_message():
     cls, topic = get_random_class_and_topic()
     return f"Привет! Я ученик {cls} класса, и мне очень сложно даётся тема \"{topic}\". Мы сегодня проходили это в школе, но я почти ничего не понял... Можешь помочь разобраться?\n\nВот задача из учебника: [придумай конкретную задачу с вычислениями по теме {topic} для {cls} класса с реалистичными числами]"
 
-def send_message(chat_id, text):
-    """Отправка сообщения в Telegram"""
+def send_message_sync(chat_id, text):
+    """Синхронная отправка сообщения через requests"""
+    import requests
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        'chat_id': chat_id,
+        'text': text,
+        'parse_mode': 'HTML'
+    }
     try:
-        bot.send_message(chat_id=chat_id, text=text, parse_mode='HTML')
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            logger.info(f"Сообщение отправлено в чат {chat_id}")
+        else:
+            logger.error(f"Ошибка отправки: {response.status_code}, {response.text}")
     except Exception as e:
-        logger.error(f"Ошибка отправки сообщения: {e}")
+        logger.error(f"Ошибка при отправке запроса: {e}")
 
 def get_cerebras_response(user_message, chat_id):
     """Получает ответ от Cerebras API"""
@@ -121,7 +132,7 @@ def get_cerebras_response(user_message, chat_id):
             context += "Ты почти понял, но всё ещё нуждаешься в подтверждении.]"
         
         # Добавляем историю
-        for msg in session['messages'][-6:]:  # Храним последние 6 сообщений для контекста
+        for msg in session['messages'][-6:]:
             messages.append(msg)
         
         # Добавляем текущее сообщение с контекстом
@@ -136,7 +147,7 @@ def get_cerebras_response(user_message, chat_id):
             messages=messages,
             model="llama3.1-70b",
             max_tokens=2048,
-            temperature=0.8,  # Немного креативности для "человечности"
+            temperature=0.8,
             top_p=0.9
         )
         
@@ -194,12 +205,12 @@ def webhook():
         # Обработка команды /start
         if user_msg == '/start':
             welcome_text = generate_initial_message()
-            send_message(chat_id, welcome_text)
+            send_message_sync(chat_id, welcome_text)
             return jsonify({"status": "ok"})
         
         # Обработка обычных сообщений
         response_text = get_cerebras_response(user_msg, chat_id)
-        send_message(chat_id, response_text)
+        send_message_sync(chat_id, response_text)
         
         return jsonify({"status": "ok"})
         
@@ -211,15 +222,22 @@ def webhook():
 def set_webhook():
     """Установка вебхука (вызвать один раз после деплоя)"""
     try:
+        import requests
+        
         # Получаем URL сервиса из запроса
         host_url = request.host_url.rstrip('/')
         webhook_url = f"{host_url}/webhook"
         
-        # Удаляем старый вебхук и устанавливаем новый
-        bot.delete_webhook()
-        result = bot.set_webhook(url=webhook_url)
+        # Удаляем старый вебхук
+        delete_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook"
+        requests.get(delete_url)
         
-        if result:
+        # Устанавливаем новый вебхук
+        set_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
+        payload = {'url': webhook_url}
+        response = requests.post(set_url, json=payload)
+        
+        if response.status_code == 200 and response.json().get('ok'):
             return jsonify({
                 "status": "success",
                 "message": f"Webhook установлен на {webhook_url}",
@@ -228,7 +246,7 @@ def set_webhook():
         else:
             return jsonify({
                 "status": "error",
-                "message": "Не удалось установить webhook"
+                "message": f"Не удалось установить webhook: {response.text}"
             }), 500
             
     except Exception as e:
@@ -239,8 +257,13 @@ def set_webhook():
 def delete_webhook():
     """Удаление вебхука"""
     try:
-        bot.delete_webhook()
-        return jsonify({"status": "success", "message": "Webhook удалён"})
+        import requests
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook"
+        response = requests.get(url)
+        if response.json().get('ok'):
+            return jsonify({"status": "success", "message": "Webhook удалён"})
+        else:
+            return jsonify({"status": "error", "message": response.text}), 500
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
