@@ -52,7 +52,9 @@ def webhook():
         return "No JSON", 400
 
     try:
-        message = data.get("message") or data.get("edited_message")
+        message = data.get("message", {})
+user_msg = message.get("text", "").strip()
+chat_id = message.get("chat", {}).get("id")
 
         if not message:
             return "No message", 200
