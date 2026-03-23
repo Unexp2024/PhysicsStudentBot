@@ -44,27 +44,44 @@ def index():
 # -----------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json()
-
-    print("Incoming JSON:", data)
-
-    if not data:
-        return "No JSON", 400
-
     try:
-        message = data.get("message", {})
-user_msg = message.get("text", "").strip()
-chat_id = message.get("chat", {}).get("id")
+        data = request.get_json()
+        print("Incoming webhook JSON:", data)
 
-        if not message:
-            return "No message", 200
+        # Проверка структуры
+        if not data or "message" not in data:
+            return "ok"
 
+        message = data["message"]
+
+        # chat_id
         chat_id = message["chat"]["id"]
 
-        # ✅ ВАЖНО: достаём text правильно
-        user_text = message.get("text", "")
-        if user_text:
-            user_text = user_text.strip()
+        # текст сообщения (ВАЖНО!)
+        user_msg = message.get("text", "")
+
+        # если вдруг не текст (например, стикер)
+        if not isinstance(user_msg, str):
+            user_msg = ""
+
+        user_msg = user_msg.strip()
+
+        # лог
+        print("User message:", user_msg)
+
+        # ответ бота (пока тест)
+        if user_msg == "/start":
+            reply = "Бот работает"
+        else:
+            reply = "Я получил сообщение: " + user_msg
+
+        send_message(chat_id, reply)
+
+        return "ok"
+
+    except Exception as e:
+        print("ERROR:", e)
+        return "error", 500
 
         # -----------------------------
         # /start
