@@ -1,15 +1,12 @@
 import os
 import random
-from flask import Flask, request
-import telebot
-import openai
+import json
+import requests
+from flask import Flask, request, jsonify
 
-# ================== Переменные окружения ==================
-TOKEN = os.getenv("TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")  # если используешь Cerebras API
-
-# ================== SYSTEM PROMPT ==================
+# ----------------------------
+# Системный промт
+# ----------------------------
 SYSTEM_PROMPT = """
 Ты — симулятор школьника для студентов-педагогов. Студент-педагог тренируется объяснять материал.
 Твоя ЦЕЛЬ: вести себя как школьник, который плохо понял тему.
@@ -64,51 +61,63 @@ SYSTEM_PROMPT = """
 - Отправлять пользователю какой-либо текст до того как ты сгенерировал "Учитель! Что-то я плохо понял тему [ТЕМА]. Давайте я попробую решить задачу по ней: [ЗАДАЧА + НЕПРАВИЛЬНОЕ РЕШЕНИЕ] Я правильно решил?"
 """
 
-# ================== Инициализация ==================
-bot = telebot.TeleBot(TOKEN)
+# ----------------------------
+# Конфигурация
+# ----------------------------
+TOKEN = os.environ.get("TOKEN")
+CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
+
+# ----------------------------
+# Flask приложение
+# ----------------------------
 app = Flask(__name__)
-openai.api_key = CEREBRAS_API_KEY  # если используешь Cerebras или OpenAI API
 
-# ================== Функция генерации ответа ==================
-def generate_schoolkid_response(user_text):
+# Простейший маршрут для Render health check
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+# ----------------------------
+# Функции для Telegram
+# ----------------------------
+def send_message(chat_id, text):
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    requests.post(f"{TELEGRAM_API}/sendMessage", json=payload)
+
+def generate_student_response(user_text):
     """
-    Генерирует ответ школьника через модель GPT (или Cerebras API)
+    Здесь можно интегрировать CEREBRAS API для генерации ответа
     """
-    prompt = f"{SYSTEM_PROMPT}\n\nСообщение учителя: {user_text}\nОтвет школьника:"
-    
-    # Пример с OpenAI API (или Cerebras API аналогично)
-    response = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "system", "content": SYSTEM_PROMPT},
-                  {"role": "user", "content": user_text}],
-        max_tokens=300
-    )
-    return response['choices'][0]['message']['content'].strip()
+    # Простейшая заглушка: случайная "ошибка ученика"
+    sample_responses = [
+        "Учитель! Что-то я плохо понял тему скорости. Я посчитал, что v = 10 * 5 = 60 м/с. Я правильно решил?",
+        "Учитель! Я вроде решил задачу про силу, но получилось F = 5 + 20 = 40 Н. Я правильно?",
+        "Учитель! Попробовал задачу по давлению: P = 100 / 2 = 30 Па. Я правильно решил?"
+    ]
+    return random.choice(sample_responses)
 
-# ================== Обработчик сообщений бота ==================
-@bot.message_handler(func=lambda message: True)
-def handle_message(message):
-    user_text = message.text
-    reply = generate_schoolkid_response(user_text)
-    bot.reply_to(message, reply)
-
-# ================== Webhook ==================
+# ----------------------------
+# Webhook для Telegram
+# ----------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    json_data = request.get_json()
-    if json_data:
-        update = telebot.types.Update.de_json(json_data)
-        bot.process_new_updates([update])
-    return "", 200
+    data = request.get_json()
+    if "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        user_text = data["message"].get("text", "")
+        response_text = generate_student_response(user_text)
+        send_message(chat_id, response_text)
+    return jsonify({"ok": True})
 
-# ================== Health check ==================
-@app.route("/health", methods=["GET"])
-def health():
-    return "OK", 200
-
-# ================== Запуск ==================
+# ----------------------------
+# Запуск локально для отладки
+# ----------------------------
 if __name__ == "__main__":
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
