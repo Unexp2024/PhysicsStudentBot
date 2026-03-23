@@ -1,5 +1,4 @@
 import os
-import random
 import requests
 from flask import Flask, request, jsonify
 
@@ -11,18 +10,13 @@ CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
 app = Flask(__name__)
-sessions = {}
 
 # ----------------------------
-# TOPICS
+# HEALTH
 # ----------------------------
-TOPICS_BY_GRADE = {
-    7: ["сила тяжести", "механическое движение", "скорость", "плотность", "давление"],
-    8: ["теплопроводность", "работа и мощность", "простые механизмы", "энергия"],
-    9: ["законы Ньютона", "движение", "импульс", "архимедова сила", "ток"],
-    10: ["движение по окружности", "тяготение", "работа"],
-    11: ["термодинамика", "электрическое поле", "магнитное поле", "колебания"]
-}
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
 
 # ----------------------------
 # TELEGRAM
@@ -36,135 +30,112 @@ def send_message(chat_id, text):
 # ----------------------------
 # CEREBRAS CALL
 # ----------------------------
-def call_cerebras(prompt):
-    url = "https://api.cerebras.net/v1/generate"
-    headers = {"Authorization": f"Bearer {CEREBRAS_API_KEY}"}
+def call_llm(messages):
+    url = "https://api.cerebras.ai/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {CEREBRAS_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
     payload = {
-        "prompt": prompt,
-        "max_tokens": 250,
-        "temperature": 0.7
+        "model": "llama3.1-8b",
+        "messages": messages,
+        "temperature": 0.9,
+        "max_tokens": 500
     }
 
-    try:
-        r = requests.post(url, headers=headers, json=payload, timeout=10)
-        return r.json().get("text", "")
-    except:
-        return ""
+    r = requests.post(url, headers=headers, json=payload)
+    return r.json()["choices"][0]["message"]["content"]
 
 # ----------------------------
-# VALIDATION (КЛЮЧЕВОЕ!)
+# VALIDATION
 # ----------------------------
-def fix_task(text):
-    text_lower = text.lower()
-
-    # если нет вопроса → добавляем
-    if "найдите" not in text_lower and "определите" not in text_lower:
-        text = text.strip() + "\nНайдите искомую величину."
-
-    # если нет "Я подумал" → добавляем ученическое решение-заглушку
-    if "я" not in text_lower:
-        text += "\nЯ подумал, что нужно просто сложить числа, поэтому получил ответ 10."
-
-    return text.strip()
-
-# ----------------------------
-# GENERATE TASK
-# ----------------------------
-def generate_task(topic):
-    prompt = f"""
-Сгенерируй школьную задачу по физике на тему "{topic}".
-
-СТРОГО КАК В УЧЕБНИКЕ:
-
-1. Краткое условие (1-2 предложения)
-2. Чёткий вопрос: "Найдите..." или "Определите..."
-3. Неправильное решение ученика
-
-ТРЕБОВАНИЯ:
-- Минимум 2 числовых параметра
-- Без лишней болтовни
-- Реалистичный школьный стиль
-- Решение ученика должно быть с ошибками
-- Ученик пишет неуверенно
-
-ФОРМАТ:
-<условие>
-<вопрос>
-Я подумал, что ...
-
-НЕ ПИШИ правильный ответ
-"""
-
-    raw = call_cerebras(prompt)
-    return fix_task(raw)
-
-# ----------------------------
-# START SESSION
-# ----------------------------
-def start_session(chat_id):
-    grade = random.randint(7, 11)
-    topic = random.choice(TOPICS_BY_GRADE[grade])
-
-    task = generate_task(topic)
-
-    sessions[chat_id] = {
-        "stage": 1,
-        "topic": topic
-    }
-
+def is_valid_task(text):
     return (
-        f"Учитель! Я плохо понял тему {topic}. "
-        f"Я тут решил задачу:\n{task}\n"
-        f"Я правильно решил?"
+        "ЗАДАЧА:" in text and
+        "ЧТО НАЙТИ:" in text and
+        "РЕШЕНИЕ УЧЕНИКА:" in text
     )
 
 # ----------------------------
-# PROGRESSION (упрощённо)
+# GENERATE TASK (WITH RETRY)
 # ----------------------------
-def handle_response(chat_id, user_text):
-    state = sessions.get(chat_id)
+def generate_task():
 
-    if not state:
-        return "Нажмите Старт."
+    for _ in range(3):
 
-    stage = state["stage"]
+        messages = [
+            {
+                "role": "system",
+                "content": """
+Ты школьник, который плохо понимает физику.
 
-    if stage == 1:
-        state["stage"] = 2
-        return "А можете объяснить это на простом примере из жизни?"
+Сгенерируй ОДНУ задачу строго в формате:
 
-    elif stage == 2:
-        state["stage"] = 3
-        return "Я вроде понял часть, но всё равно путаюсь..."
+ЗАДАЧА:
+(полное условие с числами)
 
-    elif stage == 3:
-        state["stage"] = 4
-        return "Кажется, я почти понял, но не уверен..."
+ЧТО НАЙТИ:
+(что нужно вычислить)
 
-    else:
-        return "Ой, теперь вроде понял! Спасибо!"
+РЕШЕНИЕ УЧЕНИКА:
+(НЕПРАВИЛЬНОЕ решение с минимум 2 ошибками)
+
+ТРЕБОВАНИЯ:
+- 7–11 класс
+- обязательно числа
+- минимум 2 ошибки
+- ученик путается
+- НЕ давай правильный ответ
+"""
+            }
+        ]
+
+        text = call_llm(messages)
+
+        if is_valid_task(text):
+            return text
+
+    # fallback если LLM тупит
+    return """ЗАДАЧА:
+Тело массой 2 кг движется со скоростью 3 м/с.
+
+ЧТО НАЙТИ:
+Импульс тела.
+
+РЕШЕНИЕ УЧЕНИКА:
+Я думаю, импульс = 2 + 3 = 6 кг·м/с.
+Наверное, надо было сложить.
+"""
 
 # ----------------------------
-# ROUTES
+# START MESSAGE
 # ----------------------------
-@app.route("/health")
-def health():
-    return jsonify({"status": "ok"})
+def build_start_message(task_text):
+    return f"""Учитель! Я плохо понял тему. Я тут решил задачу:
 
+{task_text}
+
+Я правильно решил?"""
+
+# ----------------------------
+# WEBHOOK
+# ----------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
 
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
-        text = data["message"].get("text", "").lower()
+        text = data["message"].get("text", "")
 
-        if text in ["старт", "/start"]:
-            reply = start_session(chat_id)
+        if text.lower() == "/start":
+            task = generate_task()
+            msg = build_start_message(task)
+            send_message(chat_id, msg)
         else:
-            reply = handle_response(chat_id, text)
-
-        send_message(chat_id, reply)
+            send_message(chat_id, "Я не понял объяснение... Можете объяснить подробнее?")
 
     return jsonify({"ok": True})
 
@@ -172,5 +143,5 @@ def webhook():
 # RUN
 # ----------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
