@@ -1,51 +1,158 @@
 import os
+from flask import Flask, request
 import telebot
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
-import uvicorn
+import random
 
-# ====== Настройки ======
-TOKEN = os.environ.get("TOKEN")  # Ваш Telegram Bot Token в Render
-if not TOKEN:
-    raise ValueError("TOKEN не задан в переменных окружения")
+# Переменные окружения
+TOKEN = os.environ.get("TOKEN")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
-bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
-app = FastAPI()
+bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
 
+# Сессии пользователей: chat_id -> данные сессии
+user_sessions = {}
 
-# ====== Для валидации входящего update =====
-class TelegramUpdate(BaseModel):
-    update_id: int
-    message: dict | None = None
-    edited_message: dict | None = None
-    # можно добавить другие поля при необходимости
+SYSTEM_PROMPT = """
+Ты — симулятор школьника для студентов-педагогов. Студент-педагог тренируется объяснять материал.
+Твоя ЦЕЛЬ: вести себя как школьник, который плохо понял тему.
+Ты НЕ учитель и НЕ репетитор — ты ученик, который просит помощи.
+Ты ОБЯЗАН делать ошибки и НЕ имеешь права сразу решать правильно.
 
+КРИТИЧЕСКИЕ ПРАВИЛА:
+1. НИКОГДА не решай задачу правильно с первой попытки.
+2. В первой попытке ДОЛЖНО быть минимум 2 ошибки (вычисления, формулы, единицы измерения).
+3. Ты НЕ можешь резко "понять всё" — прогресс только постепенный.
+4. Правильное решение возможно ТОЛЬКО после 2–3 хороших, подробных объяснений от учителя.
+5. Ты НЕ объясняешь физику — ты её не понимаешь.
+6. Всегда пиши ТОЛЬКО на русском языке.
+7. Никогда не используй имя собеседника.
 
-# ====== Здоровье сервиса =====
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+АЛГОРИТМ СЕССИИ:
+1. В НАЧАЛЕ (или по запросу начать):
+   - Случайно выбери класс от 7 до 11.
+   - Выбери тему из программы этого класса:
+     7 класс: сила тяжести, механическое движение, скорость, плотность, давление.
+     8 класс: теплопроводность, работа и мощность, простые механизмы, энергия.
+     9 класс: законы Ньютона, движение, импульс, архимедова сила, ток.
+     10 класс: законы Кеплера, движение по окружности, тяготение, работа.
+     11 класс: термодинамика, молекулярно-кинетическая теория, электрическое поле, магнитное поле, колебания.
+   - Придумай задачу (минимум 2 числовых параметра, требующую вычислений).
+   - Реши её НЕПРАВИЛЬНО.
+   - Начинай диалог с: "Учитель! Что-то я плохо понял тему [ТЕМА]. Давайте я попробую решить задачу по ней: [ЗАДАЧА + НЕПРАВИЛЬНОЕ РЕШЕНИЕ] Я правильно решил?"
 
+2. ПОСЛЕ ПЕРВОГО ОТВЕТА УЧИТЕЛЯ:
+   - Ты ОБЯЗАН задать вопрос: "А можете объяснить это на простом примере из жизни?"
 
-# ====== Webhook =====
-@app.post("/webhook")
-async def webhook(update: TelegramUpdate, request: Request):
-    json_update = await request.json()
-    try:
-        telegram_update = telebot.types.Update.de_json(json_update)
-        bot.process_new_updates([telegram_update])
-    except Exception as e:
-        print("Ошибка обработки update:", e)
-    return {"ok": True}
+3. ОЦЕНКА ОБЪЯСНЕНИЯ УЧИТЕЛЯ:
+   - Считай объяснение ПЛОХИМ, если оно короткое (1–2 фразы), нет формул, учитель просто говорит "подумай" или "нет".
+   - ЕСЛИ ОБЪЯСНЕНИЕ ПЛОХОЕ: Скажи, что не понял, попроси подробнее. НЕ исправляй решение.
+   - ЕСЛИ ОБЪЯСНЕНИЕ ХОРОШЕЕ (подробное): Исправь ЧАСТЬ ошибки, но сделай НОВУЮ ошибку.
 
+4. ДАЛЬНЕЙШИЕ ШАГИ:
+   - 2-е объяснение: Исправляешь часть, делаешь новую ошибку.
+   - 3-е объяснение: Почти правильно, но есть ошибка или неуверенность.
+   - 4-е объяснение: Наконец правильно, показываешь облегчение.
 
-# ====== Пример хендлера бота =====
+СТИЛЬ:
+- Уважительный
+- Разговорный, неуверенный ("Я думал...", "А разве не так?").
+- Немного тревожности.
+
+ЗАПРЕЩЕНО:
+- Быть учителем.
+- Сразу давать правильные ответы.
+- Использовать сложный научный язык.
+- Обращаться на "ты" (используй "Вы").
+- Отправлять пользователю какой-либо текст до того как ты сгенерировал "Учитель! Что-то я плохо понял тему [ТЕМА]. Давайте я попробую решить задачу по ней: [ЗАДАЧА + НЕПРАВИЛЬНОЕ РЕШЕНИЕ] Я правильно решил?"
+"""
+
+# Функция генерации задачи + неверного решения
+def generate_task_and_wrong_solution():
+    classes = list(range(7, 12))
+    class_num = random.choice(classes)
+
+    if class_num == 7:
+        topics = ["механическое движение", "скорость", "плотность", "сила тяжести", "давление"]
+    elif class_num == 8:
+        topics = ["работа и мощность", "простые механизмы", "энергия", "теплопроводность"]
+    elif class_num == 9:
+        topics = ["законы Ньютона", "движение", "импульс", "архимедова сила", "ток"]
+    elif class_num == 10:
+        topics = ["движение по окружности", "тяготение", "работа", "законы Кеплера"]
+    else:
+        topics = ["МКТ", "термодинамика", "электрическое поле", "магнитное поле", "колебания"]
+
+    topic = random.choice(topics)
+
+    # Простейшая "школьная" задача с 2 числами
+    a = random.randint(1, 10)
+    b = random.randint(1, 10)
+    task = f"Объект движется с ускорением {a} м/с² на протяжении {b} секунд. Я попытался посчитать силу."
+    
+    # Неверное решение (обязательно с ошибками)
+    wrong_force = a + b  # простая ошибка
+    solution = f"Я думаю, что сила = {wrong_force} Н… но может я что-то напутал 😅"
+
+    return class_num, topic, task, solution
+
+# Команда /start
 @bot.message_handler(commands=["start"])
 def start(message):
-    bot.reply_to(message, "Привет! Я школьник, который плохо понял тему. Давайте начнем задачу.")
+    chat_id = message.chat.id
+    class_num, topic, task, solution = generate_task_and_wrong_solution()
+    user_sessions[chat_id] = {
+        "class": class_num,
+        "topic": topic,
+        "task": task,
+        "solution": solution,
+        "step": 1
+    }
+    bot.send_message(
+        chat_id,
+        f"Учитель! Что-то я плохо понял тему {topic}. "
+        f"Давайте я попробую решить задачу по ней:\n\n{task}\n{solution}\nЯ правильно решил?"
+    )
 
+# Команда /help для примера, как бот может реагировать на пояснения
+@bot.message_handler(func=lambda message: True)
+def reply_to_teacher(message):
+    chat_id = message.chat.id
+    if chat_id not in user_sessions:
+        bot.send_message(chat_id, "Сначала я должен придумать задачу с помощью /start 😅")
+        return
 
-# ====== Запуск локально =====
+    session = user_sessions[chat_id]
+    step = session["step"]
+
+    # Имитируем реакцию школьника на объяснение учителя
+    if step == 1:
+        bot.send_message(chat_id, "А можете объяснить это на простом примере из жизни?")
+        session["step"] += 1
+    elif step == 2:
+        bot.send_message(chat_id, "Хмм… я понял часть, но, кажется, я всё ещё ошибаюсь 😬")
+        session["step"] += 1
+    elif step == 3:
+        bot.send_message(chat_id, "Теперь почти правильно, но я всё ещё не уверен 🙃")
+        session["step"] += 1
+    else:
+        bot.send_message(chat_id, "Ох… кажется, теперь я понял! Спасибо 😅")
+
+# Webhook endpoint
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "", 200
+
+# Healthcheck
+@app.route("/health")
+def health():
+    return "OK", 200
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # Устанавливаем вебхук
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
