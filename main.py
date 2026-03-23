@@ -85,6 +85,13 @@ def generate_initial_message():
     cls, topic = get_random_class_and_topic()
     return f"Привет! Я ученик {cls} класса, и мне очень сложно даётся тема \"{topic}\". Мы сегодня проходили это в школе, но я почти ничего не понял... Можешь помочь разобраться?\n\nВот задача из учебника: [придумай конкретную задачу с вычислениями по теме {topic} для {cls} класса с реалистичными числами]"
 
+def send_message(chat_id, text):
+    """Отправка сообщения в Telegram"""
+    try:
+        bot.send_message(chat_id=chat_id, text=text, parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"Ошибка отправки сообщения: {e}")
+
 def get_cerebras_response(user_message, chat_id):
     """Получает ответ от Cerebras API"""
     try:
@@ -155,7 +162,7 @@ def index():
     return jsonify({
         "status": "active",
         "service": "Physics Student Bot",
-        "timestamp": asyncio.get_event_loop().time() if hasattr(asyncio, 'get_event_loop') else "N/A"
+        "message": "Бот работает! Отправьте /start в Telegram"
     })
 
 @app.route('/webhook', methods=['POST'])
@@ -163,37 +170,36 @@ def webhook():
     """Обработка вебхуков от Telegram"""
     try:
         # Логируем входящий JSON
-        update_json = request.get_json()
-        logger.info(f"Получен вебхук: {json.dumps(update_json, ensure_ascii=False)}")
+        data = request.get_json()
+        logger.info(f"Incoming webhook JSON: {json.dumps(data, ensure_ascii=False)}")
         
-        # Создаём объект Update
-        update = Update.de_json(update_json, bot)
+        # Проверяем, что есть сообщение
+        if not data or 'message' not in data:
+            logger.warning("Нет сообщения в данных")
+            return jsonify({"status": "ok"})
         
-        # Обрабатываем сообщение
-        if update.message:
-            chat_id = update.message.chat_id
-            user_message = update.message.text
-            
-            logger.info(f"Сообщение от {chat_id}: {user_message}")
-            
-            # Обработка команды /start
-            if user_message and user_message.startswith('/start'):
-                welcome_text = generate_initial_message()
-                bot.send_message(chat_id=chat_id, text=welcome_text)
-                return jsonify({"status": "ok"})
-            
-            # Обработка обычных сообщений
-            if user_message:
-                # Получаем ответ от Cerebras
-                response_text = get_cerebras_response(user_message, chat_id)
-                
-                # Отправляем ответ
-                bot.send_message(
-                    chat_id=chat_id, 
-                    text=response_text,
-                    parse_mode='HTML'
-                )
-                logger.info(f"Отправлен ответ пользователю {chat_id}")
+        message_data = data['message']
+        
+        # Получаем текст сообщения
+        if 'text' not in message_data:
+            logger.info("Сообщение без текста (возможно, фото/стикер)")
+            return jsonify({"status": "ok"})
+        
+        user_msg = message_data['text'].strip()
+        chat_id = message_data['chat']['id']
+        user_name = message_data['from'].get('first_name', 'Учитель')
+        
+        logger.info(f"Сообщение от {user_name} (chat_id: {chat_id}): {user_msg}")
+        
+        # Обработка команды /start
+        if user_msg == '/start':
+            welcome_text = generate_initial_message()
+            send_message(chat_id, welcome_text)
+            return jsonify({"status": "ok"})
+        
+        # Обработка обычных сообщений
+        response_text = get_cerebras_response(user_msg, chat_id)
+        send_message(chat_id, response_text)
         
         return jsonify({"status": "ok"})
         
@@ -203,9 +209,9 @@ def webhook():
 
 @app.route('/setwebhook', methods=['GET'])
 def set_webhook():
-"""Установка вебхука (вызвать один раз после деплоя)"""
+    """Установка вебхука (вызвать один раз после деплоя)"""
     try:
-        # Получаем URL сервиса из переменной окружения или запроса
+        # Получаем URL сервиса из запроса
         host_url = request.host_url.rstrip('/')
         webhook_url = f"{host_url}/webhook"
         
