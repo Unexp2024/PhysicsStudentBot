@@ -73,9 +73,8 @@ def generate_task_with_mistake(class_number, topic):
 # Логика генерации ответа ученика
 # ----------------------------
 def generate_student_response(chat_id, user_text):
-    # Инициализация диалога
+    # Если диалога ещё нет — создаём стартовое сообщение
     if chat_id not in dialogs:
-        # Случайный класс и тема
         class_number = random.randint(7, 11)
         topic = random.choice(CLASSES[class_number])
         task = generate_task_with_mistake(class_number, topic)
@@ -85,9 +84,10 @@ def generate_student_response(chat_id, user_text):
             "topic": topic,
             "last_task": task
         }
+        # Стартовое сообщение с задачей
         return f"Учитель! Что-то я плохо понял тему {topic}. Давайте я попробую решить задачу по ней: {task} Я правильно решил?"
 
-    # Обработка следующих шагов
+    # Если диалог уже есть — продолжаем по шагам
     dialog = dialogs[chat_id]
     step = dialog["step"]
     topic = dialog["topic"]
@@ -96,7 +96,6 @@ def generate_student_response(chat_id, user_text):
         response = "А можете объяснить это на простом примере из жизни?"
         dialog["step"] += 1
     elif step == 2:
-        # частично исправляем ошибку, делаем новую
         task = dialog["last_task"]
         new_task = task.replace("м/с", "км/ч") if "м/с" in task else task
         response = f"Я подумал и вроде исправил часть: {new_task}, но всё равно что-то не так?"
@@ -107,7 +106,6 @@ def generate_student_response(chat_id, user_text):
         dialog["step"] += 1
     else:
         response = f"Кажется, теперь я понял правильно задачу по {topic}! Спасибо!"
-        # очищаем историю после полного понимания
         dialogs.pop(chat_id)
 
     return response
