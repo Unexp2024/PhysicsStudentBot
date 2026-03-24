@@ -17,18 +17,18 @@ logger = logging.getLogger(__name__)
 # Инициализация Flask
 app = Flask(__name__)
 
-# Получение токенов из переменных окружения
+# Получение токенов
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CEREBRAS_API_KEY = os.environ.get('CEREBRAS_API_KEY')
 
 if not TELEGRAM_TOKEN or not CEREBRAS_API_KEY:
-    logger.error("Отсутствуют необходимые переменные окружения!")
-    raise ValueError("TELEGRAM_TOKEN и CEREBRAS_API_KEY должны быть установлены")
+    logger.error("Отсутствуют переменные окружения!")
+    raise ValueError("Токены не установлены")
 
 # Инициализация Cerebras
 cerebras_client = Cerebras(api_key=CEREBRAS_API_KEY)
 
-# Темы по классам
+# Темы
 TOPICS_BY_CLASS = {
     7: ["механическое движение", "скорость", "плотность", "сила тяжести", "давление"],
     8: ["работа и мощность", "простые механизмы", "энергия", "теплопроводность"],
@@ -45,35 +45,25 @@ def get_random_class_and_topic():
     return cls, topic
 
 def clean_task_text(text):
-    """Удаляет явные метки ошибок, чтобы ученик выглядел уверенным"""
-    # Удаляем текст в скобках, начинающийся с "ошибка"
+    """Удаляет метки ошибок, чтобы ученик выглядел уверенным"""
     text = re.sub(r'\s*\([^)]*ошибка[^)]*\)', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\s*\([^)]*неверно[^)]*\)', '', text, flags=re.IGNORECASE)
     return text.strip()
 
 def generate_task_with_mistakes(cls, topic):
-    """
-    Генератор задач. Просим ИИ сгенерировать решение, в котором УЧЕНИК УВЕРЕН.
-    """
-    prompt = f"""Ты - ученик {cls} класса. Тема: "{topic}".
-Придумай задачу и реши её.
-Ты УВЕРЕН, что решил правильно, но на самом деле в решении 2-3 грубые ошибки (неправильная формула, арифметика или единицы измерения).
-
-ОБЯЗАТЕЛЬНЫЕ ТРЕБОВАНИЯ:
-1. Пиши так, будто ты считаешь своё решение верным.
-2. НЕ пиши слова "ошибка", "неверно", "я ошибся". Пиши уверенно.
-3. Задача должна быть обычной школьной задачей.
-
-ФОРМАТ:
-УСЛОВИЕ: [текст задачи]
-МОЁ РЕШЕНИЕ:
-1) [обозначения]
-2) [формула]
-3) [вычисление]
-ОТВЕТ: [число]
-
-Задача:"""
-
+    prompt = (
+        f"Ты - ученик {cls} класса. Тема: {topic}.\n"
+        "Придумай задачу и реши её.\n"
+        "Ты УВЕРЕН, что решил правильно, но на самом деле в решении 2-3 грубые ошибки.\n\n"
+        "ФОРМАТ:\n"
+        "УСЛОВИЕ: [текст задачи]\n"
+        "МОЁ РЕШЕНИЕ:\n"
+        "1) [обозначения]\n"
+        "2) [формула]\n"
+        "3) [вычисление]\n"
+        "ОТВЕТ: [число]\n\n"
+        "Задача:"
+    )
     try:
         response = cerebras_client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -82,7 +72,6 @@ def generate_task_with_mistakes(cls, topic):
             temperature=0.7
         )
         task = response.choices[0].message.content.strip()
-        # Финальная очистка от меток, если ИИ их вставил
         return clean_task_text(task)
     except Exception as e:
         logger.error(f"Ошибка генерации: {e}")
@@ -90,131 +79,87 @@ def generate_task_with_mistakes(cls, topic):
 
 def simple_check_task(task_text):
     if not task_text or len(task_text) < 50:
-        return False, {"reason": "too_short"}
-    checks = {
-        "has_numbers": any(c.isdigit() for c in task_text),
-        "has_structure": "УСЛОВИЕ" in task_text and "ОТВЕТ" in task_text,
-    }
-    return all(checks.values()), checks
+        return False
+    return "УСЛОВИЕ" in task_text and "ОТВЕТ" in task_text
 
 def generate_smart_fallback(cls, topic):
-    """Fallback с теми же правилами - без меток ошибок в тексте"""
     v = random.choice([12, 15, 18, 20, 24, 30, 36, 45])
-    t = random.choice([0.5, 1, 1.5, 2, 2.5, 3, 4])
-    m = random.choice([2, 3, 5, 8, 10, 12, 15, 20])
-    h = random.choice([1, 1.5, 2, 2.5, 3, 4, 5, 6])
-    F = random.choice([10, 20, 50, 100, 150, 200, 250, 300])
-    s = random.choice([5, 10, 20, 50, 100, 150, 200, 300])
-    a = random.choice([2, 3, 4, 5, 6, 8, 10])
-    n = random.choice([10, 20, 30, 40, 50])
-
-    # Словарь с примерами (здесь написаны "ошибка" для понимания, но clean_task_text их уберет перед отправкой)
+    m = random.choice([2, 3, 5, 8, 10, 12])
+    h = random.choice([1, 1.5, 2, 2.5, 3])
+    s = random.choice([5, 10, 20, 50, 100])
+    
     fallbacks = {
         7: {
-            "скорость": [
-                f"Велосипедист едет со скоростью {v} км/ч. Сколько времени он потратит на путь {s} км?\nМОЁ РЕШЕНИЕ:\n1) t - время, s - путь, v - скорость\n2) t = s * v (ошибка: умножение!)\n3) t = {s} * {v} = {s*v} ч\nОТВЕТ: {s*v} ч",
-            ],
-            "сила тяжести": [
-                f"Кирпич массой {m} кг падает. Сила тяжести? (g=10)\nМОЁ РЕШЕНИЕ:\n1) F - сила, m - масса, g\n2) F = m + g (ошибка: сложение!)\n3) F = {m} + 10 = {m+10} Н\nОТВЕТ: {m+10} Н"
-            ]
+            "скорость": f"Велосипедист едет со скоростью {v} км/ч. Сколько времени он потратит на путь {s} км?\nМОЁ РЕШЕНИЕ:\n1) t - время, s - путь, v - скорость\n2) t = s * v\n3) t = {s} * {v} = {s*v} ч\nОТВЕТ: {s*v} ч",
+            "сила тяжести": f"Кирпич массой {m} кг падает. Сила тяжести? (g=10)\nМОЁ РЕШЕНИЕ:\n1) F - сила, m - масса\n2) F = m + 10\n3) F = {m} + 10 = {m+10} Н\nОТВЕТ: {m+10} Н"
         },
         10: {
-             "движение по окружности": [
-                f"Колесо радиусом {h} м. Скорость {v//2} м/с. Ускорение?\nМОЁ РЕШЕНИЕ:\n1) a - ускорение, v - скорость, R - радиус\n2) a = v + R (ошибка: сложение!)\n3) a = {v//2} + {h} = {v//2+h} м/с²\nОТВЕТ: {v//2+h} м/с²",
-            ]
+             "движение по окружности": f"Колесо радиусом {h} м. Скорость {v//2} м/с. Ускорение?\nМОЁ РЕШЕНИЕ:\n1) a - ускорение, v - скорость, R - радиус\n2) a = v + R\n3) a = {v//2} + {h} = {v//2+h} м/с²\nОТВЕТ: {v//2+h} м/с²"
         }
     }
     
-    # Достаем задачу (логика вашего старого кода)
     class_tasks = fallbacks.get(cls, {})
-    tasks = class_tasks.get(topic, [])
-    if not tasks:
-        # Если темы нет, берем любую из класса
-        for t in class_tasks.values():
-            tasks.extend(t)
+    task = class_tasks.get(topic)
     
-    if tasks:
-        return clean_task_text(random.choice(tasks))
-    
-    # Если совсем пусто
-    return f"Задача по теме {topic}. Масса {m} кг. Найти силу. F = m + 10 = {m+10} Н."
+    if not task:
+        # Если темы нет, берем первую попавшуюся из класса
+        if class_tasks:
+            task = list(class_tasks.values())[0]
+        else:
+            task = f"Задача по теме {topic}. Масса {m} кг. Найти силу. F = m + 10 = {m+10} Н."
+            
+    return clean_task_text(task)
 
 def generate_initial_message():
     cls, topic = get_random_class_and_topic()
-    task = None
-    raw_task = generate_task_with_mistakes(cls, topic)
+    task = generate_task_with_mistakes(cls, topic)
     
-    if raw_task:
-        is_ok, _ = simple_check_task(raw_task)
-        if is_ok:
-            task = raw_task
-    
-    if not task:
+    if not task or not simple_check_task(task):
         task = generate_smart_fallback(cls, topic)
         
-    return f"""Учитель! Что-то я плохо понял тему "{topic}". Давайте я попробую решить задачу по ней:
-
-{task}
-
-Я правильно решил?""", cls, topic, task
+    return (f"Учитель! Что-то я плохо понял тему \"{topic}\". "
+            f"Давайте я попробую решить задачу по ней:\n\n{task}\n\nЯ правильно решил?"), cls, topic, task
 
 def check_teacher_quality(message):
-    """
-    Строгий фильтр качества.
-    Возвращает JSON с оценкой.
-    """
-    prompt = f"""Оцени качество ответа учителя.
-Сообщение учителя: "{message}"
+    # Простой эвристический фильтр + LLM проверка
+    words = message.split()
+    if len(words) < 4:
+        return False
+    
+    bad_phrases = ["не знаю", "подумай", "сам", "перечитай"]
+    if any(p in message.lower() for p in bad_phrases):
+        return False
 
-КРИТЕРИИ ПЛОХОГО ОТВЕТА:
-- Очень короткий (меньше 5 слов)
-- Нет формул или конкретных объяснений
-- Фразы "подумай", "ну не знаю", "перечитай"
-- Общая отмазка без конкретики
-
-Ответь ТОЛЬКО JSON:
-{{
-    "is_relevant": true/false,
-    "reason": "краткая причина"
-}}"""
-
+    # LLM проверка (быстрая)
+    prompt = (
+        f"Оцени качество ответа учителя: \"{message}\"\n"
+        "Это хорошее объяснение? (true/false). "
+        "Ответь только JSON: {\"is_relevant\": true/false}"
+    )
     try:
         resp = cerebras_client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model="llama3.1-8b",
-            max_tokens=100,
+            max_tokens=50,
             temperature=0.1
         )
         content = resp.choices[0].message.content
-        # Простой парсинг
         if '{' in content:
             json_part = content[content.find('{'):content.rfind('}')+1]
             data = json.loads(json_part)
             return data.get("is_relevant", False)
-    except Exception as e:
-        logger.error(f"Check quality error: {e}")
+    except Exception:
+        pass
     
-    # Если ошибка, считаем中性, но лучше перестраховаться
-    if len(message.split()) < 4:
-        return False
     return True
 
 def get_student_response(user_message, session):
-    """Генерация ответа с учетом 'Системного промта'"""
-    
-    # Считаем количество ХОРОШИХ объяснений
     good_count = session.get('good_explanations', 0)
-    
-    # Оцениваем текущее сообщение учителя
     is_relevant = check_teacher_quality(user_message)
     
-    # Логика смены состояний
     if not is_relevant:
-        # Учитель ответил плохо
         action = "STAY_CONFUSED"
-        # Не увеличиваем счетчик good_count
     else:
-        # Учитель ответил хорошо
         session['good_explanations'] = good_count + 1
         good_count = session['good_explanations']
         
@@ -227,65 +172,57 @@ def get_student_response(user_message, session):
         else:
             action = "SUCCESS"
 
-    # Формируем промт на основе действия
     task = session.get('task', '')
     topic = session.get('topic', 'физика')
+    history = format_history(session.get('messages', []))
     
-    instructions = {
-        "STAY_CONFUSED": """
-Учитель не объяснил толком. Твоя реакция:
-- Скажи, что не понял его объяснение.
-- Спроси конкретно: "А почему именно так?" или "Где именно у меня ошибка?"
-- НЕ исправляй своё решение.
-- Будь настойчивым, но вежливым.""",
-        
-        "ASK_EXAMPLE": """
-Учитель дал первое хорошее объяснение. Твоя реакция:
-- Скажи: "О, кажется, начал понимать..."
-- НО ТЫ ОБЯЗАН задать вопрос: "Можете, пожалуйста, объяснить это на простом примере из жизни?"
-- НЕ исправляй решение прямо сейчас.""",
-        
-        "PARTIAL_FIX": """
-Учитель объяснил второй раз (хорошо). Твоя реакция:
-- Скажи: "А, теперь понятнее!"
-- ИСПРАВЬ ОДНУ ошибку из своего решения.
-- НО СДЕЛАЙ НОВУЮ ошибку (например, в вычислениях или единицах измерения).
-- Спроси: "А так правильно?"
-- Будь уверен в себе.""",
-        
-        "ALMOST_THERE": """
-Учитель объяснил третий раз. Твоя реакция:
-- Скажи: "Кажется, я догадался!"
-- Реши почти правильно, но оставь маленькую неточность (например, забудь единицы измерения или округли неправильно).
-- Спроси: "Я молодец?"",
-        
-        "SUCCESS": """
-Учитель помог тебе разобраться (4-й раз). Твоя реакция:
-- Скажи: "Ура! Теперь точно понял!"
-- Напиши ПРАВИЛЬНОЕ решение.
-- Поблагодари учителя."""
-    }
+    # Определяем инструкцию в зависимости от действия
+    if action == "STAY_CONFUSED":
+        instr = (
+            "Учитель не объяснил толком. Твоя реакция:\n"
+            "- Скажи, что не понял.\n"
+            "- Спроси конкретно: 'А почему именно так?'\n"
+            "- НЕ исправляй своё решение."
+        )
+    elif action == "ASK_EXAMPLE":
+        instr = (
+            "Учитель дал первое хорошее объяснение. Твоя реакция:\n"
+            "- Скажи: 'О, кажется, начал понимать...'\n"
+            "- ОБЯЗАТЕЛЬНО спроси: 'Можете, пожалуйста, объяснить это на простом примере из жизни?'\n"
+            "- НЕ исправляй решение."
+        )
+    elif action == "PARTIAL_FIX":
+        instr = (
+            "Учитель объяснил второй раз. Твоя реакция:\n"
+            "- Скажи: 'А, теперь понятнее!'\n"
+            "- ИСПРАВЬ ОДНУ ошибку.\n"
+            "- НО СДЕЛАЙ НОВУЮ ошибку (например, в вычислениях).\n"
+            "- Спроси: 'А так правильно?'"
+        )
+    elif action == "ALMOST_THERE":
+        instr = (
+            "Учитель объяснил третий раз. Твоя реакция:\n"
+            "- Скажи: 'Кажется, я догадался!'\n"
+            "- Реши почти правильно, но оставь маленькую неточность.\n"
+            "- Спроси: 'Я молодец?'"
+        )
+    else: # SUCCESS
+        instr = (
+            "Учитель помог разобраться. Твоя реакция:\n"
+            "- Скажи: 'Ура! Теперь точно понял!'\n"
+            "- Напиши ПРАВИЛЬНОЕ решение.\n"
+            "- Поблагодари учителя."
+        )
 
-    instr = instructions.get(action, instructions["STAY_CONFUSED"])
-    
-    prompt = f"""Ты - ученик. Тема: "{topic}".
-Твоя задача, которую ты решал:
-{task}
-
-ИСТОРИЯ (для контекста):
-{format_history(session.get('messages', []))}
-
-ПОСЛЕДНЕЕ СООБЩЕНИЕ УЧИТЕЛЯ:
-"{user_message}"
-
-ИНСТРУКЦИЯ ДЛЯ ТВОЕГО ОТВЕТА:
-{instr}
-
-ВАЖНО:
-- Пиши ТОЛЬКО свой ответ. Не пиши "Учитель:" и историю.
-- Не используй обращение "ты", используйте "вы".
-- Будь эмоциональным школьником.
-"""
+    # Собираем промт безопасным способом (без сложных кавычек)
+    prompt = (
+        f"Ты - ученик. Тема: {topic}.\n"
+        f"Твоя задача: {task}\n\n"
+        f"ИСТОРИЯ:\n{history}\n\n"
+        f"ПОСЛЕДНЕЕ СООБЩЕНИЕ УЧИТЕЛЯ:\n{user_message}\n\n"
+        f"ИНСТРУКЦИЯ:\n{instr}\n\n"
+        "ВАЖНО: Пиши ТОЛЬКО свой ответ. Не пиши 'Учитель:'. Будь эмоциональным школьником."
+    )
 
     try:
         response = cerebras_client.chat.completions.create(
@@ -301,7 +238,11 @@ def get_student_response(user_message, session):
 
 def format_history(messages):
     if not messages: return "Начало"
-    return "\n".join([f"{'Учитель' if m['role']=='user' else 'Ученик'}: {m['content'][:80]}" for m in messages[-4:]])
+    lines = []
+    for m in messages[-4:]:
+        role = "Учитель" if m['role']=='user' else "Ученик"
+        lines.append(f"{role}: {m['content'][:80]}")
+    return "\n".join(lines)
 
 @app.route('/')
 def index():
@@ -335,10 +276,8 @@ def webhook():
             send_message(chat_id, welcome)
             return jsonify({"status": "ok"})
         
-        # Генерация ответа
         response = get_student_response(user_msg, session)
         
-        # Сохранение истории
         session['messages'].append({'role': 'user', 'content': user_msg})
         session['messages'].append({'role': 'assistant', 'content': response})
         if len(session['messages']) > 8: session['messages'] = session['messages'][-8:]
