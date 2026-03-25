@@ -63,7 +63,7 @@ TOPICS_BY_CLASS = {
 user_sessions = {}
 
 # ------------------------------
-# Генерация задач
+# Генерация задач (теперь задачи соответствуют теме!)
 # ------------------------------
 def get_random_class_and_topic():
     cls = random.choice(list(TOPICS_BY_CLASS.keys()))
@@ -71,38 +71,27 @@ def get_random_class_and_topic():
     return cls, topic
 
 def get_fallback_task(cls, topic):
-    m_t = random.choice([2, 5, 10])
-    h_m = random.choice([5, 10, 20])
-    m_kg = random.choice([500, 1500, 3000])
-    m_g = random.choice([200, 500, 1000])
-    F1 = random.choice([3, 5, 7])
-    F2 = random.choice([4, 6, 8])
-    k = random.choice([100, 200, 300])
-    x = random.choice([0.05, 0.1, 0.15])
-    A_pol = random.choice([300, 500, 700])
-    A_poln = random.choice([600, 1000, 1400])
-    rho = 1000
-    g = 10
-    h = random.choice([3, 5, 8])
-    v_ms = random.choice([10, 15, 20])
-    s_m = random.choice([100, 500, 1000])
-    U_V = random.choice([220, 110])
-    R_Om = random.choice([10, 20, 50])
+    # Общие случайные значения
+    m_kg = random.choice([0.5, 1, 2, 5])
+    delta_t = random.choice([20, 40, 60, 80])
+    c_water = 4200
+    Q_given = random.choice([500, 800, 1200])
+    A_given = random.choice([200, 300, 500])
 
     fallbacks = {
         8: {
-            "работа и мощность": f"УСЛОВИЕ: Кран поднимает бетонную плиту массой {m_t} т на высоту {h_m} м. Какую работу совершает кран? Ускорение свободного падения g = 10 Н/кг.\n"
-                                 f"МОЁ РЕШЕНИЕ:\n1) A — работа, F — сила, s — высота.\n2) F = m = {m_t} (просто масса). s = {h_m}.\n3) A = {m_t} * {h_m} = {m_t * h_m} Дж.\nОТВЕТ: {m_t * h_m} Дж."
+            "работа и мощность": f"УСЛОВИЕ: Кран поднимает бетонную плиту массой 2 т на высоту 10 м. Какую работу совершает кран? Ускорение свободного падения g = 10 Н/кг.\nМОЁ РЕШЕНИЕ:\n1) A — работа, F — сила, s — высота.\n2) F = m = 2 (просто масса). s = 10.\n3) A = 2 * 10 = 20 Дж.\nОТВЕТ: 20 Дж."
         },
-        # Остальные темы оставлены для полноты (можно расширять)
-        7: { "равнодействующая сил": "УСЛОВИЕ: На тело действуют две силы: 5 Н и 8 Н, направленные в противоположные стороны. Определите равнодействующую силу.\nМОЁ РЕШЕНИЕ:\n1) F — равнодействующая сила.\n2) Если силы направлены в разные стороны, их надо сложить.\n3) F = 5 + 8 = 13 Н.\nОТВЕТ: 13 Н." },
-        9: {
-            "законы Ньютона": f"УСЛОВИЕ: Автомобиль массой {m_kg} кг разгоняется с ускорением 2 м/с². Найдите равнодействующую силу, действующую на автомобиль.\nМОЁ РЕШЕНИЕ:\n1) F — сила, m — масса, a — ускорение.\n2) F = m + a.\n3) F = {m_kg} + 2 = {m_kg + 2} Н.\nОТВЕТ: {m_kg + 2} Н.",
-            "импульс": "УСЛОВИЕ: Мяч массой 0,5 кг летит со скоростью 10 м/с. Найдите импульс мяча.\nМОЁ РЕШЕНИЕ:\n1) p — импульс.\n2) p = m + v.\n3) p = 0.5 + 10 = 10.5 кг·м/с.\nОТВЕТ: 10.5 кг·м/с."
+        11: {
+            "термодинамика": f"УСЛОВИЕ: Газ совершил работу {A_given} Дж, получив от нагревателя {Q_given} Дж теплоты. Найдите изменение внутренней энергии газа.\nМОЁ РЕШЕНИЕ:\n1) ΔU — изменение внутренней энергии, A — работа, Q — теплота.\n2) ΔU = A + Q.\n3) ΔU = {A_given} + {Q_given} = {A_given + Q_given} Дж.\nОТВЕТ: {A_given + Q_given} Дж."
+        },
+        7: {
+            "плотность": f"УСЛОВИЕ: Металлическая деталь имеет массу 800 г и объём 200 см³. Определите плотность металла.\nМОЁ РЕШЕНИЕ:\n1) ρ — плотность, m — масса, V — объём.\n2) ρ = m + V.\n3) ρ = 800 + 200 = 1000 г/см³.\nОТВЕТ: 1000 г/см³."
         }
     }
 
-    return fallbacks.get(cls, {}).get(topic, fallbacks[8]["работа и мощность"])
+    # Возвращаем задачу по теме, если есть, иначе дефолтную
+    return fallbacks.get(cls, {}).get(topic, fallbacks[11]["термодинамика"])
 
 def generate_initial_message():
     cls, topic = get_random_class_and_topic()
@@ -114,37 +103,36 @@ def generate_initial_message():
     return welcome, cls, topic, task
 
 # ------------------------------
-# Проверка качества ответа учителя
+# Проверка качества учителя
 # ------------------------------
 def check_teacher_quality(message):
     lower = message.lower()
-    invalid = ["надо подумать", "не знаю", "не уверен", "подумай сам"]
-    if any(phrase in lower for phrase in invalid):
+    if any(word in lower for word in ["надо подумать", "не знаю", "подумай сам", "не уверен"]):
         return False
-    return len(message.split()) >= 10
+    return len(message.split()) >= 12
 
 # ------------------------------
-# Постобработка
+# Очистка ответа
 # ------------------------------
 def clean_response(text):
     text = re.sub(r'^(Ответ учителя:|Учитель:)\s*', '', text, flags=re.I)
     text = re.sub(r'\s+', ' ', text).strip()
-    if len(text) > 280:
-        text = text[:280] + "..."
+    if len(text) > 250:
+        text = text[:250] + "..."
     return text
 
 # ------------------------------
-# Генерация ответа бота
+# Ответ школьника
 # ------------------------------
 @retry_on_failure(max_retries=3, delay=1, backoff=2)
 def generate_student_response(prompt):
-    response = cerebras_client.chat.completions.create(
+    resp = cerebras_client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
         model="llama3.1-8b",
-        max_tokens=140,
-        temperature=0.55
+        max_tokens=130,
+        temperature=0.5
     )
-    return response.choices[0].message.content.strip()
+    return resp.choices[0].message.content.strip()
 
 def get_student_response(user_message, session):
     good_count = session.get('good_explanations', 0)
@@ -157,42 +145,44 @@ def get_student_response(user_message, session):
         session['good_explanations'] = good_count + 1
         good_count = session['good_explanations']
 
-    history_text = "\n".join([f"Учитель: {m['content']}" if m['role'] == 'user' else f"Я: {m['content']}" for m in history[-5:]])
+    history_text = "\n".join([f"Учитель: {m['content']}" if m['role'] == 'user' else f"Я: {m['content']}" for m in history[-6:]])
 
-    # Строгий контроль уровня понимания
     if good_count == 0:
-        level = "Ты только что показал своё неверное решение. Ты пока совсем не понимаешь, как считать работу."
+        level = "Ты только что показал своё неверное решение. Ты пока совсем не понимаешь тему."
     elif good_count == 1:
-        level = "Учитель дал первую подсказку с примером из жизни. Ты начинаешь догадываться, но ещё не знаешь точной связи."
+        level = "Учитель дал первую подсказку с примером из жизни. Ты начинаешь догадываться, но пока не знаешь формулы."
     elif good_count == 2:
-        level = "Учитель объяснил уже дважды. Ты понимаешь идею, но пока не должен выводить полную формулу сам."
+        level = "Учитель объяснил уже два раза. Ты понимаешь смысл, но ещё не должен выводить готовые формулы."
     else:
         level = "Теперь ты должен решить задачу правильно."
 
-    prompt = f"""Ты — обычный школьник 8 класса, слабоватый в физике. Тема: {topic}.
+    prompt = f"""Ты — слабый ученик 8-9 класса по физике. Тема: {topic}.
 
-Задача:
+Задача и твоё неверное решение:
 {task}
 
+Текущий уровень понимания:
 {level}
 
-Предыдущий диалог:
+Диалог:
 {history_text}
 
 Последнее сообщение учителя: "{user_message}"
 
-Ответь коротко (1-2 предложения), как школьник. 
-Не используй формулы типа F = m*g или A = m*g*h, пока учитель не объяснил несколько раз.
-Не решай задачу полностью. Просто отвечай на вопрос учителя."""
+Правила ответа:
+- Отвечай коротко, 1-2 простых предложения.
+- Говори как обычный школьник.
+- НЕ используй формулы (типа ΔU = Q - A, A = mgh и т.д.), пока учитель не объяснил 3 раза.
+- Не решай задачу полностью.
+- Просто отвечай на вопрос учителя или проси уточнить."""
 
     try:
         result = generate_student_response(prompt)
         result = clean_response(result)
         
-        # Жёсткая защита от преждевременного решения
-        forbidden = ["f = m * g", "a = m * g * h", "работа = ", "10000", "100000", "F = m", "A ="]
-        if good_count < 2 and any(word in result.lower() for word in forbidden):
-            result = "Я понял, что сила тяжести как-то связана с массой... Но как именно считать работу крана?"
+        # Дополнительная защита от раннего решения
+        if good_count < 2 and any(kw in result.lower() for kw in ["формула", "δu =", "q - a", "работа =", "внутренняя энергия"]):
+            result = "Я понял про тепло и работу... но как правильно посчитать изменение внутренней энергии?"
             
         return result
     except Exception as e:
@@ -200,7 +190,7 @@ def get_student_response(user_message, session):
         return "Я запутался... Объясните ещё раз, пожалуйста?"
 
 # ------------------------------
-# Webhook
+# Flask
 # ------------------------------
 @app.route('/')
 def index():
