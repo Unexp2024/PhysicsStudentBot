@@ -156,10 +156,103 @@ def get_student_response(user_message, session):
         return "Я запутался... Объясните ещё раз, пожалуйста?"
 
 # ------------------------------
-# Остальная часть файла (webhook, send_message и т.д.) — без изменений
+# Flask и Telegram обработчики
 # ------------------------------
+@app.route('/')
+def index():
+    return "OK"
 
-# ... (весь остальной код из твоего файла: webhook, send_message, run_tests и т.д.)
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    try:
+        data = request.get_json()
+        if not data or 'message' not in data:
+            return jsonify({"status": "ok"})
+
+        msg = data['message']
+        if 'text' not in msg:
+            return jsonify({"status": "ok"})
+
+        user_msg = msg['text'].strip()
+        chat_id = msg['chat']['id']
+
+        if user_msg == '/start':
+            welcome, cls, topic, task, correct_answer, correct_formula = generate_initial_message()
+            user_sessions[chat_id] = {
+                'class': cls,
+                'topic': topic,
+                'task': task,
+                'correct_answer': correct_answer,
+                'correct_formula': correct_formula,
+                'messages': [],
+                'good_explanations': 0
+            }
+            send_message(chat_id, welcome)
+            return jsonify({"status": "ok"})
+
+        session = user_sessions.get(chat_id)
+        if not session:
+            welcome, cls, topic, task, correct_answer, correct_formula = generate_initial_message()
+            user_sessions[chat_id] = {
+                'class': cls,
+                'topic': topic,
+                'task': task,
+                'correct_answer': correct_answer,
+                'correct_formula': correct_formula,
+                'messages': [],
+                'good_explanations': 0
+            }
+            send_message(chat_id, welcome)
+            return jsonify({"status": "ok"})
+
+        response = get_student_response(user_msg, session)
+
+        session['messages'].append({'role': 'user', 'content': user_msg})
+        session['messages'].append({'role': 'assistant', 'content': response})
+
+        send_message(chat_id, response)
+        return jsonify({"status": "ok"})
+
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return jsonify({"status": "error"}), 500
+
+def send_message(chat_id, text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    try:
+        requests.post(url, json={'chat_id': chat_id, 'text': text}, timeout=10)
+    except Exception as e:
+        logger.error(f"Ошибка отправки сообщения: {e}")
+
+# ------------------------------
+# Тесты
+# ------------------------------
+def run_tests():
+    print("Запуск тестов...")
+    # Тест 1: Генерация задачи
+    cls, topic = get_random_class_and_topic()
+    task, correct_answer, correct_formula = get_fallback_task(cls, topic)
+    assert task and isinstance(task, str), "Задача не сгенерирована"
+    assert correct_answer is not None, "Правильный ответ не определён"
+    print("✓ Генерация задачи работает")
+
+    # Тест 2: Проверка LLM (если доступна)
+    try:
+        res = check_teacher_quality_llm(
+            "Время до остановки можно найти, если знать, насколько скорость уменьшается каждую секунду. Но нас спрашивают не время, а путь. Путь при равномерном изменении скорости — это как средняя скорость, умноженная на время. Какая будет средняя скорость, если поезд начинает с 10 м/с и заканчивает на 0 м/с?",
+            "движение"
+        )
+        assert res is True, "LLM не распознал наводящий вопрос"
+        print("✓ LLM распознаёт полезные объяснения")
+    except Exception as e:
+        print(f"⚠ LLM проверка недоступна: {e}")
+
+    # Тест 3: Проверка очистки ответа
+    cleaned = clean_response("Ответ учителя: Молодец. Так какой же ответ в задаче?", "Молодец. Так какой же ответ в задаче?")
+    assert cleaned == "Молодец. Так какой же ответ в задаче?", "Очистка не удалила 'Ответ учителя:'"
+    print("✓ Очистка ответов работает")
+
+    print("Тесты завершены.")
 
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == '--test':
