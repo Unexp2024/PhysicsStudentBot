@@ -53,6 +53,33 @@ TOPICS_BY_CLASS = {
 user_sessions = {}
 
 # ------------------------------
+# Персистентность сессий
+# ------------------------------
+SESSIONS_FILE = 'sessions.json'
+
+def load_sessions():
+    """Загружает сессии из файла при старте."""
+    global user_sessions
+    if os.path.exists(SESSIONS_FILE):
+        try:
+            with open(SESSIONS_FILE, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+                # JSON хранит ключи как строки, конвертируем обратно в int
+                user_sessions = {int(k): v for k, v in raw.items()}
+            logger.info(f"Загружено {len(user_sessions)} сессий из файла.")
+        except Exception as e:
+            logger.error(f"Ошибка загрузки сессий: {e}")
+            user_sessions = {}
+
+def save_sessions():
+    """Сохраняет сессии в файл."""
+    try:
+        with open(SESSIONS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(user_sessions, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения сессий: {e}")
+
+# ------------------------------
 # Декоратор повторных попыток
 # ------------------------------
 def retry_on_failure(max_retries=3, delay=1, backoff=2):
@@ -716,6 +743,7 @@ def webhook():
                 'messages': [],
                 'good_explanations': 0
             }
+            save_sessions()
             send_message(chat_id, welcome)
             return jsonify({"status": "ok"})
 
@@ -731,6 +759,7 @@ def webhook():
                 'messages': [],
                 'good_explanations': 0
             }
+            save_sessions()
             send_message(chat_id, welcome)
             return jsonify({"status": "ok"})
 
@@ -738,6 +767,7 @@ def webhook():
 
         session['messages'].append({'role': 'user', 'content': user_msg})
         session['messages'].append({'role': 'assistant', 'content': response})
+        save_sessions()
 
         send_message(chat_id, response)
         return jsonify({"status": "ok"})
@@ -797,8 +827,25 @@ def run_tests():
         "В задаче по колебаниям не должно быть g в условии"
     print("✓ Задача по колебаниям не содержит g в условии")
 
+    # Тест 6: Сохранение и загрузка сессий
+    test_sessions_file = 'test_sessions.json'
+    original_file = SESSIONS_FILE
+    import main as m
+    m.SESSIONS_FILE = test_sessions_file
+    m.user_sessions = {12345: {'topic': 'физика', 'messages': [], 'good_explanations': 0}}
+    save_sessions()
+    m.user_sessions = {}
+    load_sessions()
+    assert 12345 in m.user_sessions, "Сессия не восстановилась после загрузки"
+    os.remove(test_sessions_file)
+    m.SESSIONS_FILE = original_file
+    print("✓ Сохранение и загрузка сессий работают")
+
     print("Все тесты завершены успешно.")
 
+
+# Загружаем сессии при старте
+load_sessions()
 
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == '--test':
