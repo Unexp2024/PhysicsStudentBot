@@ -201,37 +201,38 @@ def generate_initial_message():
     return (f"Учитель! Что-то я плохо понял тему \"{topic}\". Давайте я попробую решить задачу по ней:\n\n{task}\n\nЯ правильно решил?"), cls, topic, task
 
 # ------------------------------
-# Проверка качества ответа учителя (улучшенная)
+# Улучшенная проверка качества ответа учителя
 # ------------------------------
 def contains_explanation(text):
-    """Проверяет, содержит ли текст явное указание на ошибку (формула, закон, число)."""
+    """Проверяет, содержит ли текст явное указание на ошибку (формула, закон, число, объяснение физического смысла)."""
     lower = text.lower()
     explaining_phrases = [
         "формула", "закон", "правило", "ошибка", "неправильно",
         "должно быть", "надо", "следует", "потому что", "так как",
         "неверно", "проверь", "пересчитай", "вспомни", "посмотри",
-        "равнодействующая", "сила упругости", "кпд", "давление", "гидростатическое"
+        "равнодействующая", "сила упругости", "кпд", "давление", "гидростатическое",
+        "противоположные", "разница", "вычитаются", "направление", "победит",
+        "складывают", "вычитают", "равнодействующая", "действуют", "вправо", "влево"
     ]
     if any(phrase in lower for phrase in explaining_phrases):
         return True
+    # Проверка на наличие математических операций (+, -, =) и чисел
     if re.search(r'\d+\s*[НмДжПа]', text) or re.search(r'[a-z]\s*[=*/+-]', lower):
         return True
     return False
 
 def contains_correction(message, task):
-    """
-    Определяет, содержит ли ответ учителя реальное исправление ошибки.
-    Ищет правильную формулу или число, соответствующее верному решению задачи.
-    """
+    """Определяет, содержит ли ответ учителя реальное исправление ошибки (готовую формулу или конкретный верный ответ)."""
     lower = message.lower()
     correct_formulas = [
         "f = m * g", "f = mg", "a = f/m", "f = ma",
         "p = f/s", "p = ρgh", "η = aполез / aполн", "η = aполезная / aполная",
-        "a = v²/r", "f = kx", "fупр = kx"
+        "a = v²/r", "f = kx", "fупр = kx", "f = k * x"
     ]
     if any(formula in lower for formula in correct_formulas):
         return True
-    if "5000" in message and "дж" in lower:
+    # Ищем числа, которые могут быть правильным ответом (например, 3 Н для равнодействующей)
+    if re.search(r'\b[0-9]+\s*Н\b', message) and "8" in lower and "5" in lower:
         return True
     return False
 
@@ -239,10 +240,11 @@ def contains_correction(message, task):
 def check_teacher_quality_llm(message):
     """Использует LLM для определения, объяснил ли учитель ошибку."""
     prompt = (
-        f"Ученик попросил объяснить: 'Я правильно решил?'. Учитель ответил: \"{message}\"\n\n"
+        f"Ученик спросил 'Я правильно решил?'. Учитель ответил: \"{message}\"\n\n"
         "Является ли ответ учителя объяснением ошибки? Объяснение должно содержать:\n"
         "- указание на конкретную ошибку (формулу, число, единицы измерения)\n"
-        "- исправление или подсказку\n\n"
+        "- исправление или подсказку, как правильно решить\n"
+        "- объяснение физического смысла (например, 'силы направлены противоположно, поэтому их надо вычитать')\n\n"
         "Примеры НЕ объяснений:\n"
         "- 'надо подумать', 'не знаю', 'не уверен', 'подумай сам'\n"
         "- 'нет', 'неверно' (без указания причины)\n"
@@ -264,6 +266,7 @@ def check_teacher_quality(message):
     """Комбинированная проверка: эвристики + LLM."""
     lower_msg = message.lower()
 
+    # Список фраз, которые однозначно не являются объяснением
     invalid_phrases = [
         "надо подумать", "не знаю", "не уверен", "подумай сам",
         "не могу сказать", "без понятия", "неверно", "нет"
@@ -271,12 +274,15 @@ def check_teacher_quality(message):
     if any(phrase in lower_msg for phrase in invalid_phrases):
         return False
 
+    # Если ответ короткий (< 10 слов) и нет ключевых слов, считаем необъяснением
     if len(message.split()) < 10 and not contains_explanation(message):
         return False
 
+    # Если эвристика говорит, что объяснение есть, возвращаем True
     if contains_explanation(message):
         return True
 
+    # Иначе обращаемся к LLM
     try:
         return check_teacher_quality_llm(message)
     except Exception as e:
@@ -284,7 +290,7 @@ def check_teacher_quality(message):
         return False
 
 # ------------------------------
-# Генерация ответа ученика
+# Генерация ответа ученика (улучшенные промпты)
 # ------------------------------
 @retry_on_failure(max_retries=3, delay=1, backoff=2)
 def generate_student_response(prompt):
@@ -314,13 +320,11 @@ def get_student_response(user_message, session):
     task = session.get('task', '')
     topic = session.get('topic', 'физика')
 
-    has_correction = False
-    if is_relevant:
-        has_correction = contains_correction(user_message, task)
-
-    if not is_relevant or not has_correction:
+    # Новая логика: если объяснение релевантно, увеличиваем счётчик и переходим к следующему этапу
+    if not is_relevant:
         action = "STAY_CONFUSED"
     else:
+        # Увеличиваем счётчик, потому что учитель дал объяснение
         session['good_explanations'] = good_count + 1
         good_count = session['good_explanations']
 
@@ -333,11 +337,11 @@ def get_student_response(user_message, session):
         else:
             action = "SUCCESS"
 
+    # Инструкции с более жёсткими ограничениями
     if action == "STAY_CONFUSED":
         instr = (
-            "Учитель не объяснил ошибку или не дал исправления. Ты уверен в своём решении.\n"
+            "Учитель не объяснил ошибку.\n"
             "Спроси прямо: 'Можете объяснить, пожалуйста?'.\n"
-            "Не рассуждай, не пиши скобок, не объясняй физику.\n"
         )
     elif action == "ASK_EXAMPLE":
         instr = (
@@ -349,7 +353,6 @@ def get_student_response(user_message, session):
         instr = (
             "Учитель привёл пример. Исправь формулу, но ошибись в счёте (намеренно).\n"
             "Спроси: 'Так правильно?'.\n"
-            "Не пиши длинных объяснений.\n"
             "Пример: 'А, точно! Тогда F = m * a = 500 * 2 = 1000 Н. Так верно?'"
         )
     elif action == "ALMOST_THERE":
@@ -375,7 +378,7 @@ def get_student_response(user_message, session):
         "2. НЕ рассуждай о физике, не объясняй свои действия.\n"
         "3. Пиши ТОЛЬКО одну короткую фразу или вопрос.\n"
         "4. Не повторяй условие задачи.\n"
-        "5. Используй только простые предложения."
+        "5. Используй только простые предложения.\n"
     )
 
     try:
@@ -384,7 +387,7 @@ def get_student_response(user_message, session):
         return result
     except Exception as e:
         logger.error(f"Ошибка генерации ответа: {e}")
-        return "Я не понял. Можете объяснить ещё раз?"
+        return "Я не понял. Так ответ правильный или нет?"
 
 # ------------------------------
 # Flask и Telegram обработчики
@@ -468,6 +471,7 @@ def run_tests():
     assert contains_explanation("Подумай сам") is False
     assert check_teacher_quality("Надо подумать") is False
     assert check_teacher_quality("Не знаю") is False
+    assert check_teacher_quality("Силы направлены в противоположные стороны, поэтому их надо вычитать") is True
     print("✓ Эвристика проверки ответа учителя работает")
 
     # Тест 3: Проверка наличия исправления
