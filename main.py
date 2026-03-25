@@ -828,17 +828,16 @@ def run_tests():
     print("✓ Задача по колебаниям не содержит g в условии")
 
     # Тест 6: Сохранение и загрузка сессий
-    test_sessions_file = 'test_sessions.json'
+    test_file = 'test_sessions_tmp.json'
     original_file = SESSIONS_FILE
-    import main as m
-    m.SESSIONS_FILE = test_sessions_file
-    m.user_sessions = {12345: {'topic': 'физика', 'messages': [], 'good_explanations': 0}}
+    globals()['SESSIONS_FILE'] = test_file
+    globals()['user_sessions'] = {99999: {'topic': 'тест', 'messages': [], 'good_explanations': 0}}
     save_sessions()
-    m.user_sessions = {}
+    globals()['user_sessions'] = {}
     load_sessions()
-    assert 12345 in m.user_sessions, "Сессия не восстановилась после загрузки"
-    os.remove(test_sessions_file)
-    m.SESSIONS_FILE = original_file
+    assert 99999 in user_sessions, "Сессия не восстановилась после загрузки"
+    os.remove(test_file)
+    globals()['SESSIONS_FILE'] = original_file
     print("✓ Сохранение и загрузка сессий работают")
 
     print("Все тесты завершены успешно.")
