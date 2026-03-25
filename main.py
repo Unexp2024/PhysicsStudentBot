@@ -844,10 +844,18 @@ def run_tests():
 
 
 # Загружаем сессии при старте
-load_sessions()
+_sessions_loaded = False
+
+@app.before_request
+def ensure_sessions_loaded():
+    global _sessions_loaded
+    if not _sessions_loaded:
+        load_sessions()
+        _sessions_loaded = True
 
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == '--test':
+        load_sessions()
         run_tests()
     else:
         app.run(debug=True, port=5000)
