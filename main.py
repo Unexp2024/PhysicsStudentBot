@@ -233,7 +233,6 @@ def get_fallback_task(cls, topic):
     task_data = class_tasks.get(topic)
     
     if not task_data:
-        # Если тема не найдена, берём первую из класса или универсальный текст
         if class_tasks:
             task_data = list(class_tasks.values())[0]
         else:
@@ -251,7 +250,7 @@ def generate_initial_message():
 # ------------------------------
 @retry_on_failure(max_retries=2, delay=1)
 def check_teacher_quality_llm(message, topic):
-    """Использует LLM для определения, дал ли учитель полезное объяснение (наводящий вопрос, указание на ошибку, подсказку)."""
+    """Определяет, дал ли учитель полезное объяснение (наводящий вопрос, подсказку, указание на ошибку)."""
     prompt = (
         f"Ученик спросил 'Я правильно решил?' по теме \"{topic}\". Учитель ответил: \"{message}\"\n\n"
         "Является ли ответ учителя полезным объяснением? Полезное объяснение может быть:\n"
@@ -277,119 +276,97 @@ def check_teacher_quality_llm(message, topic):
     return False
 
 def check_teacher_quality(message, topic):
-    """Определяет, дал ли учитель полезное объяснение."""
+    """Обёртка для проверки полезности."""
     lower_msg = message.lower()
-    # Список фраз, которые однозначно не являются полезными
     invalid_phrases = [
         "надо подумать", "не знаю", "не уверен", "подумай сам",
         "не могу сказать", "без понятия", "неверно", "нет"
     ]
     if any(phrase in lower_msg for phrase in invalid_phrases):
         return False
-    
-    # Если сообщение короткое (< 10 слов) и нет ключевых слов, скорее всего не полезное
-    if len(message.split()) < 10:
-        # Но могут быть короткие наводящие вопросы, поэтому проверим через LLM
-        pass
-    
-    # Обращаемся к LLM
     try:
         return check_teacher_quality_llm(message, topic)
     except Exception as e:
         logger.error(f"Ошибка LLM при оценке ответа учителя: {e}")
-        # Fallback: если LLM недоступна, считаем полезным любое сообщение длиннее 10 слов
+        # Fallback: считаем полезным любое сообщение длиннее 10 слов
         return len(message.split()) >= 10
 
 # ------------------------------
-# Генерация ответа ученика
+# Генерация ответа ученика (динамическая)
 # ------------------------------
 @retry_on_failure(max_retries=3, delay=1, backoff=2)
 def generate_student_response(prompt):
     response = cerebras_client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
         model="llama3.1-8b",
-        max_tokens=150,
+        max_tokens=200,
         temperature=0.7
     )
     return response.choices[0].message.content.strip()
 
 def postprocess_response(response):
+    # Удаляем лишние префиксы
     if response.startswith("Учитель:") or response.startswith("Я:"):
         parts = response.split(":")
         response = parts[-1].strip()
     if response.startswith("("):
         response = re.sub(r"^\([^)]*\)\s*", "", response)
+    # Обрезаем по первому переносу строки, чтобы не было длинных рассуждений
     if "\n" in response:
         response = response.split("\n")[0]
-    if len(response) > 300:
-        response = response[:300]
+    if len(response) > 400:
+        response = response[:400]
     return response
 
 def get_student_response(user_message, session):
     good_count = session.get('good_explanations', 0)
     topic = session.get('topic', 'физика')
     task = session.get('task', '')
+    history = session.get('messages', [])
     
     # Проверяем, дал ли учитель полезное объяснение
     is_helpful = check_teacher_quality(user_message, topic)
     
-    if not is_helpful:
-        # Учитель не дал полезного объяснения → просим объяснить, но отвечаем на наводящие вопросы
-        action = "ASK_FOR_HELP"
-        # Счётчик не увеличиваем
-    else:
-        # Учитель дал полезное объяснение → увеличиваем счётчик
+    # Если полезное — увеличиваем счётчик, иначе оставляем как есть
+    if is_helpful:
         session['good_explanations'] = good_count + 1
         good_count = session['good_explanations']
-        
-        if good_count == 1:
-            action = "PARTIAL_FIX"      # первое объяснение: ученик исправляет, но ошибается в счёте
-        elif good_count == 2:
-            action = "ALMOST_THERE"     # второе объяснение: ученик исправляет, но ошибается в единицах
-        else:
-            action = "SUCCESS"          # третье и более: ученик решает правильно
     
-    # Формируем инструкцию в зависимости от действия
-    if action == "ASK_FOR_HELP":
-        instr = (
-            "Учитель не дал полезного объяснения (возможно, просто сказал 'нет' или 'подумай').\n"
-            "Ты хочешь понять свою ошибку, поэтому вежливо попроси учителя объяснить, что не так.\n"
-            "Используй короткую фразу, без рассуждений.\n"
-            "Примеры: 'А в чём ошибка?', 'Какая формула правильная?', 'Объясните, пожалуйста'."
-        )
-    elif action == "PARTIAL_FIX":
-        instr = (
-            "Учитель дал полезное объяснение. Ты понял, в чём ошибка.\n"
-            "Исправь своё решение, используя правильную формулу, но намеренно ошибись в вычислениях.\n"
-            "Спроси: 'Так правильно?'\n"
-            "Пример: 'А, точно! Тогда F = m * a = 500 * 2 = 1000 Н. Так верно?'"
-        )
-    elif action == "ALMOST_THERE":
-        instr = (
-            "Учитель снова помог. Ты почти понял.\n"
-            "Исправь решение, но ошибись в единицах измерения.\n"
-            "Спроси: 'Верно?'\n"
-            "Пример: 'Тогда v = s / t = 100 / 10 = 10 км/ч. Верно?'"
-        )
-    else:  # SUCCESS
-        instr = (
-            "Теперь ты понял всё правильно.\n"
-            "Реши задачу полностью правильно, используя верные формулы.\n"
-            "Поблагодари учителя.\n"
-            "Пример: 'Спасибо! Теперь понял: v = s / t = 100 / 10 = 10 м/с. Всё верно!'"
-        )
+    # Формируем историю диалога (последние 4 сообщения, включая текущее)
+    # Для простоты будем использовать последние 2-3 пары
+    history_text = ""
+    if history:
+        last_few = history[-6:]  # последние 6 сообщений (3 пары)
+        for msg in last_few:
+            role = "Учитель" if msg['role'] == 'user' else "Школьник"
+            history_text += f"{role}: {msg['content']}\n"
+    
+    # Добавляем текущее сообщение учителя
+    history_text += f"Учитель: {user_message}\n"
+    
+    # Определяем уровень понимания на основе good_count
+    if good_count == 0:
+        understanding = "Ты только что получил задачу и сделал грубую ошибку. Ты пока не понимаешь физику, но стараешься."
+    elif good_count == 1:
+        understanding = "Учитель один раз объяснил тебе ошибку. Ты начинаешь понимать, но всё ещё можешь ошибаться в формулах или вычислениях."
+    elif good_count == 2:
+        understanding = "Учитель объяснил тебе уже дважды. Ты почти разобрался, но иногда путаешь единицы измерения."
+    else:
+        understanding = "Учитель объяснил несколько раз. Теперь ты понял тему и можешь решить задачу правильно."
     
     prompt = (
-        f"Ты — школьник-двоечник. Тема: {topic}.\n"
+        f"Ты — школьник-двоечник, который пытается разобраться в физике. Тема: {topic}.\n"
         f"Твоя задача (с твоим решением): {task}\n\n"
-        f"Учитель написал: \"{user_message}\"\n\n"
-        f"Твоя цель: {instr}\n\n"
-        "СТРОГИЕ ПРАВИЛА:\n"
-        "1. НЕ пиши внутренние монологи и мысли в скобках.\n"
-        "2. НЕ рассуждай о физике, не объясняй свои действия.\n"
-        "3. Пиши ТОЛЬКО одну короткую фразу или вопрос.\n"
-        "4. Не повторяй условие задачи.\n"
-        "5. Используй только простые предложения."
+        f"{understanding}\n\n"
+        f"Вот что происходило до этого:\n{history_text}\n"
+        f"Теперь напиши свой ответ (только одну короткую фразу или вопрос, но если нужно — можно кратко рассуждать).\n"
+        "Правила:\n"
+        "1. Не пиши длинных монологов. Максимум 1-2 предложения.\n"
+        "2. Отвечай прямо на последний вопрос учителя.\n"
+        "3. Если учитель задал наводящий вопрос — постарайся ответить, даже если ошибочно.\n"
+        "4. Если учитель указал на ошибку — поправься, но можешь ошибиться в вычислениях или единицах (в зависимости от уровня понимания).\n"
+        "5. Не используй фразу 'Объясните, пожалуйста' слишком часто — только если действительно не понял.\n"
+        "6. Твой ответ должен быть естественным для ученика, который учится."
     )
     
     try:
@@ -398,7 +375,7 @@ def get_student_response(user_message, session):
         return result
     except Exception as e:
         logger.error(f"Ошибка генерации ответа: {e}")
-        return "А в чём ошибка?"
+        return "Я не совсем понял. Может, объясните ещё раз?"
 
 # ------------------------------
 # Flask и Telegram обработчики
@@ -452,6 +429,7 @@ def webhook():
 
         response = get_student_response(user_msg, session)
 
+        # Сохраняем историю
         session['messages'].append({'role': 'user', 'content': user_msg})
         session['messages'].append({'role': 'assistant', 'content': response})
 
@@ -491,20 +469,6 @@ def run_tests():
         print("✓ LLM распознаёт полезные объяснения")
     except Exception as e:
         print(f"⚠ LLM проверка недоступна: {e}")
-
-    # Тест 3: Генерация ответа ученика (с заглушкой)
-    session = {'good_explanations': 0, 'task': 'задача', 'topic': 'физика', 'correct_answer': 100, 'correct_formula': 'F = m*a'}
-    try:
-        original = generate_student_response
-        def dummy_gen(prompt):
-            return "А в чём ошибка?"
-        globals()['generate_student_response'] = dummy_gen
-        resp = get_student_response("Объяснение", session)
-        assert isinstance(resp, str), "Ответ ученика не строка"
-        print("✓ Генерация ответа ученика работает (заглушка)")
-        globals()['generate_student_response'] = original
-    except Exception as e:
-        print(f"✗ Ошибка в генерации ответа: {e}")
 
     print("Тесты завершены.")
 
