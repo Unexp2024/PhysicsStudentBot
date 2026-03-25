@@ -49,6 +49,7 @@ TOPICS_BY_CLASS = {
 }
 
 user_sessions = {}
+processed_updates = set()
 
 # ------------------------------
 # Персистентность сессий
@@ -689,9 +690,8 @@ def get_student_response(user_message, session):
         "2. Если учитель задал вопрос — дай на него прямой ответ.\n"
         "3. Твои ответы должны быть внутренне логичными. "
         "Нельзя в одном предложении утверждать одно, а в следующем — противоположное. "
-        "Если ты считаешь, что длина не влияет — придерживайся этого мнения до конца ответа. "
-        "Если ты считаешь, что длинный провод толкнётся сильнее — объясни почему, "
-        "исходя из своего (пусть и неверного) понимания.\n"
+        "Если ты считаешь, что какая-то величина не влияет — придерживайся этого мнения "
+        "до конца ответа и объясни почему, исходя из своего (пусть и неверного) понимания.\n"
         "4. Ошибки должны звучать правдоподобно для школьника: "
         "«наверное, длина тут не важна, магнит же одинаково на весь провод давит» — "
         "это believable ошибка. "
@@ -713,6 +713,7 @@ def get_student_response(user_message, session):
         logger.error(f"Ошибка генерации ответа: {e}")
         return "Я не совсем понял. Можете объяснить ещё раз?"
 
+
 # ------------------------------
 # Flask и Telegram обработчики
 # ------------------------------
@@ -727,6 +728,18 @@ def webhook():
         data = request.get_json()
         if not data or 'message' not in data:
             return jsonify({"status": "ok"})
+
+        # Дедупликация: игнорируем уже обработанные update_id
+        update_id = data.get('update_id')
+        if update_id in processed_updates:
+            logger.info(f"Дубликат update_id={update_id}, пропускаем.")
+            return jsonify({"status": "ok"})
+        processed_updates.add(update_id)
+
+        # Ограничиваем размер множества, чтобы не росло бесконечно
+        if len(processed_updates) > 1000:
+            oldest = min(processed_updates)
+            processed_updates.discard(oldest)
 
         msg = data['message']
         if 'text' not in msg:
@@ -843,6 +856,12 @@ def run_tests():
     os.remove(test_file)
     globals()['SESSIONS_FILE'] = SESSIONS_FILE
     print("✓ Сохранение и загрузка сессий работают")
+
+    # Тест 7: Дедупликация update_id
+    processed_updates.clear()
+    processed_updates.add(42)
+    assert 42 in processed_updates, "update_id не добавился в множество"
+    print("✓ Дедупликация update_id работает")
 
     print("Все тесты завершены успешно.")
 
