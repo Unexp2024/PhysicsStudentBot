@@ -198,7 +198,7 @@ def get_fallback_task(cls, topic):
 def generate_initial_message():
     cls, topic = get_random_class_and_topic()
     task = get_fallback_task(cls, topic)
-        return (f"Учитель! Что-то я плохо понял тему \"{topic}\". Давайте я попробую решить задачу по ней:\n\n{task}\n\nЯ правильно решил?"), cls, topic, task
+    return (f"Учитель! Что-то я плохо понял тему \"{topic}\". Давайте я попробую решить задачу по ней:\n\n{task}\n\nЯ правильно решил?"), cls, topic, task
 
 # ------------------------------
 # Проверка качества ответа учителя (улучшенная)
