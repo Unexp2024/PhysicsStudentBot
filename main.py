@@ -10,7 +10,6 @@ import warnings
 from functools import wraps
 from flask import Flask, request, jsonify
 
-# Подавляем предупреждение Pydantic V1 / Python 3.14
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 logging.basicConfig(
@@ -27,7 +26,6 @@ CEREBRAS_API_KEY = os.environ.get('CEREBRAS_API_KEY')
 if not TELEGRAM_TOKEN or not CEREBRAS_API_KEY:
     logger.warning("Один или оба токена не установлены — проверьте переменные окружения.")
 
-# Ленивая инициализация клиента Cerebras
 _cerebras_client = None
 
 def get_cerebras_client():
@@ -58,13 +56,11 @@ user_sessions = {}
 SESSIONS_FILE = 'sessions.json'
 
 def load_sessions():
-    """Загружает сессии из файла при старте."""
     global user_sessions
     if os.path.exists(SESSIONS_FILE):
         try:
             with open(SESSIONS_FILE, 'r', encoding='utf-8') as f:
                 raw = json.load(f)
-                # JSON хранит ключи как строки, конвертируем обратно в int
                 user_sessions = {int(k): v for k, v in raw.items()}
             logger.info(f"Загружено {len(user_sessions)} сессий из файла.")
         except Exception as e:
@@ -72,7 +68,6 @@ def load_sessions():
             user_sessions = {}
 
 def save_sessions():
-    """Сохраняет сессии в файл."""
     try:
         with open(SESSIONS_FILE, 'w', encoding='utf-8') as f:
             json.dump(user_sessions, f, ensure_ascii=False, indent=2)
@@ -623,7 +618,6 @@ ENGLISH_TO_RUSSIAN = {
 
 
 def clean_response(text, user_message):
-    """Удаляет повторения реплик учителя и английские слова из ответа."""
     text = re.sub(r'^(Ответ учителя:|Учитель:)\s*', '', text, flags=re.IGNORECASE)
     if re.match(r'^["\']', text):
         text = re.sub(r'^["\'].*?["\']\s*', '', text)
@@ -640,6 +634,7 @@ def clean_response(text, user_message):
 def get_student_response(user_message, session):
     good_count = session.get('good_explanations', 0)
     topic = session.get('topic', 'физика')
+    cls = session.get('class', 9)
     task = session.get('task', '')
     history = session.get('messages', [])
 
@@ -659,24 +654,22 @@ def get_student_response(user_message, session):
     if good_count == 0:
         level_instruction = (
             "Учитель впервые обратился к тебе. "
-            "Ты должен ответить на его вопрос или реплику — "
-            "своими словами, без формул и без чисел из задачи. "
-            "Можешь рассуждать бытовыми понятиями, приводить примеры из жизни. "
-            "Физические термины можешь путать или подменять "
-            "(например, говорить «тяжесть» вместо «масса», «сила удара» вместо «сила»), "
+            "Отвечай на его вопрос своими словами, без формул и без чисел из задачи. "
+            "Рассуждай бытовыми понятиями. "
+            "Физические термины можешь путать или подменять бытовыми словами, "
             "но ты понимаешь вопрос и отвечаешь именно на него."
         )
     elif good_count == 1:
         level_instruction = (
             "Учитель уже раз объяснил тебе. Ты начинаешь понимать. "
-            "Отвечай на его вопрос напрямую. "
+            "Отвечай напрямую на его вопрос. "
             "Можешь правильно назвать нужные физические величины, "
-            "но в формуле или в связи между величинами всё ещё можешь ошибиться."
+            "но в формуле или в связи между ними всё ещё можешь ошибиться."
         )
     elif good_count == 2:
         level_instruction = (
             "Учитель объяснял уже дважды. Ты почти разобрался. "
-            "Отвечай на его вопрос уверенно. "
+            "Отвечай уверенно. "
             "Можешь написать формулу, но допусти ошибку в вычислениях или единицах."
         )
     else:
@@ -686,18 +679,26 @@ def get_student_response(user_message, session):
         )
 
     prompt = (
-        f"Ты — школьник 9-го класса. Тема, которую ты не очень понял: {topic}.\n"
-        f"Задача, которую ты решал (с твоим решением): {task}\n\n"
+        f"Ты — школьник {cls}-го класса, который плохо понял тему \"{topic}\". "
+        f"Ты отвечаешь как живой подросток: коротко, разговорно, иногда неуверенно.\n\n"
+        f"Задача, которую ты решал: {task}\n\n"
         f"{level_instruction}\n\n"
         f"История диалога:\n{history_text}\n"
         "ВАЖНЫЕ ПРАВИЛА:\n"
-        "1. Ты ОБЯЗАН ответить именно на последнюю реплику учителя — не уходи в сторону.\n"
-        "2. Если учитель задал вопрос — дай конкретный ответ на него.\n"
-        "3. Твои трудности — в физике, а не в понимании слов. "
-        "Простые вопросы («как это называется?», «что тяжелее?») ты понимаешь с первого раза.\n"
-        "4. Не повторяй предыдущие реплики. Не зацикливайся.\n"
-        "5. Только русский язык. Никаких английских слов.\n"
-        "6. Пиши кратко: 1–2 предложения.\n"
+        "1. Отвечай ТОЛЬКО на последнюю реплику учителя.\n"
+        "2. Если учитель задал вопрос — дай на него прямой ответ.\n"
+        "3. Твои ответы должны быть внутренне логичными. "
+        "Нельзя в одном предложении утверждать одно, а в следующем — противоположное. "
+        "Если ты считаешь, что длина не влияет — придерживайся этого мнения до конца ответа. "
+        "Если ты считаешь, что длинный провод толкнётся сильнее — объясни почему, "
+        "исходя из своего (пусть и неверного) понимания.\n"
+        "4. Ошибки должны звучать правдоподобно для школьника: "
+        "«наверное, длина тут не важна, магнит же одинаково на весь провод давит» — "
+        "это believable ошибка. "
+        "«длина не влияет, поэтому длинный сильнее» — это абсурд, так не пиши.\n"
+        "5. Не повторяй предыдущие реплики. Не зацикливайся.\n"
+        "6. Только русский язык. Никаких английских слов.\n"
+        "7. Пиши кратко: 1–2 предложения.\n"
         "Твой ответ:"
     )
 
@@ -708,7 +709,6 @@ def get_student_response(user_message, session):
     except Exception as e:
         logger.error(f"Ошибка генерации ответа: {e}")
         return "Я не совсем понял. Можете объяснить ещё раз?"
-
 
 # ------------------------------
 # Flask и Telegram обработчики
@@ -829,21 +829,24 @@ def run_tests():
 
     # Тест 6: Сохранение и загрузка сессий
     test_file = 'test_sessions_tmp.json'
-    original_file = SESSIONS_FILE
     globals()['SESSIONS_FILE'] = test_file
-    globals()['user_sessions'] = {99999: {'topic': 'тест', 'messages': [], 'good_explanations': 0}}
+    globals()['user_sessions'] = {
+        99999: {'topic': 'тест', 'messages': [], 'good_explanations': 0}
+    }
     save_sessions()
     globals()['user_sessions'] = {}
     load_sessions()
     assert 99999 in user_sessions, "Сессия не восстановилась после загрузки"
     os.remove(test_file)
-    globals()['SESSIONS_FILE'] = original_file
+    globals()['SESSIONS_FILE'] = SESSIONS_FILE
     print("✓ Сохранение и загрузка сессий работают")
 
     print("Все тесты завершены успешно.")
 
 
-# Загружаем сессии при старте
+# ------------------------------
+# Загрузка сессий при первом запросе
+# ------------------------------
 _sessions_loaded = False
 
 @app.before_request
@@ -852,6 +855,7 @@ def ensure_sessions_loaded():
     if not _sessions_loaded:
         load_sessions()
         _sessions_loaded = True
+
 
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == '--test':
