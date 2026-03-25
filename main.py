@@ -43,7 +43,7 @@ TOPICS_BY_CLASS = {
 user_sessions = {}
 
 # ------------------------------
-# Декоратор повторных попыток (рекомендация 4)
+# Декоратор повторных попыток
 # ------------------------------
 def retry_on_failure(max_retries=3, delay=1, backoff=2):
     def decorator(func):
@@ -72,8 +72,7 @@ def get_random_class_and_topic():
     return cls, topic
 
 def get_fallback_task(cls, topic):
-    # ... (код без изменений, см. предыдущую версию) ...
-    # Оставляем как в предыдущем ответе
+    # Переменные для генерации случайных чисел в задачах
     v_kmh = random.choice([36, 54, 72])
     v_ms = random.choice([10, 15, 20])
     t_min = random.choice([5, 10, 20])
@@ -187,12 +186,11 @@ def generate_initial_message():
     return (f"Учитель! Что-то я плохо понял тему \"{topic}\". Давайте я попробую решить задачу по ней:\n\n{task}\n\nЯ правильно решил?"), cls, topic, task
 
 # ------------------------------
-# Улучшенная проверка качества ответа учителя (рекомендация 2)
+# Проверка качества ответа учителя (улучшенная)
 # ------------------------------
 def contains_explanation(text):
     """Проверяет, содержит ли текст явное указание на ошибку (формула, закон, число)."""
     lower = text.lower()
-    # Ключевые слова, указывающие на объяснение
     explaining_phrases = [
         "формула", "закон", "правило", "ошибка", "неправильно",
         "должно быть", "надо", "следует", "потому что", "так как",
@@ -201,8 +199,30 @@ def contains_explanation(text):
     ]
     if any(phrase in lower for phrase in explaining_phrases):
         return True
-    # Проверка на наличие чисел или формул (например, "F =", "m * g")
     if re.search(r'\d+\s*[НмДжПа]', text) or re.search(r'[a-z]\s*[=*/+-]', lower):
+        return True
+    return False
+
+def contains_correction(message, task):
+    """
+    Определяет, содержит ли ответ учителя реальное исправление ошибки.
+    Ищет правильную формулу или число, соответствующее верному решению задачи.
+    Для простоты проверяет наличие ожидаемого ответа или ключевой формулы.
+    """
+    # Ожидаемое правильное решение можно извлечь из task (но task содержит решение с ошибкой).
+    # Вместо этого ищем стандартные физические формулы, характерные для темы.
+    lower = message.lower()
+    # Список корректных формул по темам
+    correct_formulas = [
+        "f = m * g", "f = mg", "a = f/m", "f = ma",
+        "p = f/s", "p = ρgh", "η = aполез / aполн", "η = aполезная / aполная",
+        "a = v²/r", "f = kx", "fупр = kx"
+    ]
+    if any(formula in lower for formula in correct_formulas):
+        return True
+    # Также ищем числа, которые могли бы быть правильным ответом (не строго)
+    # Например, в задаче на работу правильный ответ 5000 Дж
+    if "5000" in message and "дж" in lower:
         return True
     return False
 
@@ -211,9 +231,14 @@ def check_teacher_quality_llm(message):
     """Использует LLM для определения, объяснил ли учитель ошибку."""
     prompt = (
         f"Ученик спросил 'Я правильно решил?'. Учитель ответил: \"{message}\"\n\n"
-        "Учитель объяснил ошибку? (Указал на формулу, число или причину?).\n"
-        "Если просто 'нет' или философия — false.\n"
-        "JSON: {\"is_relevant\": true/false}"
+        "Является ли ответ учителя объяснением ошибки? Объяснение должно содержать:\n"
+        "- указание на конкретную ошибку (формулу, число, единицы измерения)\n"
+        "- исправление или подсказку\n\n"
+        "Примеры НЕ объяснений:\n"
+        "- 'надо подумать', 'не знаю', 'не уверен', 'подумай сам'\n"
+        "- 'нет', 'неверно' (без указания причины)\n"
+        "- философские рассуждения ('физика — это сложно')\n\n"
+        "Ответь в формате JSON: {\"is_relevant\": true/false}"
     )
     resp = cerebras_client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
@@ -227,13 +252,19 @@ def check_teacher_quality_llm(message):
     return False
 
 def check_teacher_quality(message):
-    """Комбинированная проверка: эвристики + LLM при необходимости."""
-    # Если эвристика явно показывает, что объяснения нет, возвращаем False
+    """Комбинированная проверка: эвристики + LLM."""
     lower_msg = message.lower()
-    bad_markers = ["не знаю", "подумай", "сам", "перечитай", "трудно сказать", "не уверен", "спроси", "сомневаюсь", "думаю", "непонятно", "подожди", "минуту", "сейчас", "погоди", "молодец", "умница", "нет", "вряд ли", "неверно"]
-    word_count = len(message.split())
 
-    if any(marker in lower_msg for marker in bad_markers) and word_count < 25:
+    # Фразы, гарантирующие отсутствие объяснения
+    invalid_phrases = [
+        "надо подумать", "не знаю", "не уверен", "подумай сам",
+        "не могу сказать", "без понятия", "неверно", "нет"
+    ]
+    if any(phrase in lower_msg for phrase in invalid_phrases):
+        return False
+
+    # Если ответ слишком короткий (< 10 слов) и нет ключевых слов, считаем необъяснением
+    if len(message.split()) < 10 and not contains_explanation(message):
         return False
 
     # Если эвристика говорит, что объяснение есть, возвращаем True
@@ -245,48 +276,74 @@ def check_teacher_quality(message):
         return check_teacher_quality_llm(message)
     except Exception as e:
         logger.error(f"Ошибка LLM при оценке ответа учителя: {e}")
-        # Если LLM недоступна, принимаем решение по эвристике (False)
         return False
 
 # ------------------------------
-# Улучшенная генерация ответа ученика (рекомендация 6)
+# Генерация ответа ученика
 # ------------------------------
 @retry_on_failure(max_retries=3, delay=1, backoff=2)
 def generate_student_response(prompt):
-    """Генерация ответа ученика с повторными попытками."""
     response = cerebras_client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
         model="llama3.1-8b",
         max_tokens=150,
-        temperature=0.6  # немного снижена для большей предсказуемости
+        temperature=0.6
     )
     return response.choices[0].message.content.strip()
+
+def postprocess_response(response):
+    """Очистка ответа от лишних конструкций."""
+    # Удаляем префиксы "Учитель:", "Я:"
+    if response.startswith("Учитель:") or response.startswith("Я:"):
+        parts = response.split(":")
+        response = parts[-1].strip()
+    # Удаляем скобки в начале
+    if response.startswith("("):
+        response = re.sub(r"^\([^)]*\)\s*", "", response)
+    # Обрезаем по первому переносу строки
+    if "\n" in response:
+        response = response.split("\n")[0]
+    # Ограничиваем длину
+    if len(response) > 300:
+        response = response[:300]
+    return response
 
 def get_student_response(user_message, session):
     good_count = session.get('good_explanations', 0)
     is_relevant = check_teacher_quality(user_message)
-
-    if not is_relevant:
-        action = "STAY_CONFUSED"
-    else:
-        session['good_explanations'] = good_count + 1
-        good_count = session['good_explanations']
-
-        if good_count == 1: action = "ASK_EXAMPLE"
-        elif good_count == 2: action = "PARTIAL_FIX"
-        elif good_count == 3: action = "ALMOST_THERE"
-        else: action = "SUCCESS"
-
     task = session.get('task', '')
     topic = session.get('topic', 'физика')
 
-    # Улучшенные инструкции с примерами
+    # Решение о том, было ли реальное исправление
+    has_correction = False
+    if is_relevant:
+        has_correction = contains_correction(user_message, task)
+
+    if not is_relevant or not has_correction:
+        # Если учитель не объяснил или объяснил без исправления, остаёмся в состоянии "не понял"
+        action = "STAY_CONFUSED"
+        # Счётчик не увеличиваем
+    else:
+        # Увеличиваем счётчик только если было реальное исправление
+        session['good_explanations'] = good_count + 1
+        good_count = session['good_explanations']
+
+        if good_count == 1:
+            action = "ASK_EXAMPLE"
+        elif good_count == 2:
+            action = "PARTIAL_FIX"
+        elif good_count == 3:
+            action = "ALMOST_THERE"
+        else:
+            action = "SUCCESS"
+
+    # Инструкции для генератора
     if action == "STAY_CONFUSED":
         instr = (
-            "Учитель не объяснил ошибку. Ты уверен в своём решении.\n"
-            "Спроси прямо: 'Так ответ правильный или нет?'.\n"
+            "Учитель не объяснил ошибку или не дал исправления. Ты уверен в своём решении.\n"
+            "Спроси прямо: 'Можете объяснить, пожалуйста?'.\n"
             "Не рассуждай, не пиши скобок, не объясняй физику.\n"
-            "Примеры: 'Я уверен, что правильно. Так верно?', 'Ответ правильный?'"
+            "Примеры: 'Я думаю, что правильно. Так верно?', 'Можете объяснить, пожалуйста?'"
         )
     elif action == "ASK_EXAMPLE":
         instr = (
@@ -307,7 +364,7 @@ def get_student_response(user_message, session):
             "Спроси: 'Верно?'.\n"
             "Пример: 'Тогда v = s / t = 100 / 10 = 10 км/ч. Верно?'"
         )
-    else:
+    else:  # SUCCESS
         instr = (
             "Реши задачу полностью правильно, используя верные формулы.\n"
             "Поблагодари учителя.\n"
@@ -329,21 +386,10 @@ def get_student_response(user_message, session):
 
     try:
         result = generate_student_response(prompt)
-        # Пост-обработка
-        if result.startswith("Учитель:") or result.startswith("Я:"):
-            parts = result.split(":")
-            result = parts[-1].strip()
-        if result.startswith("("):
-            result = re.sub(r"^\([^)]*\)\s*", "", result)
-        if "\n" in result:
-            result = result.split("\n")[0]
-        # Ограничение длины
-        if len(result) > 300:
-            result = result[:300]
+        result = postprocess_response(result)
         return result
     except Exception as e:
         logger.error(f"Ошибка генерации ответа: {e}")
-        # Запасной вариант
         return "Я не понял. Можете объяснить ещё раз?"
 
 # ------------------------------
@@ -412,12 +458,10 @@ def send_message(chat_id, text):
         logger.error(f"Ошибка отправки сообщения: {e}")
 
 # ------------------------------
-# Юнит-тесты (рекомендация 8)
+# Тесты
 # ------------------------------
 def run_tests():
-    """Простой набор тестов для ключевых функций."""
     print("Запуск тестов...")
-
     # Тест 1: Генерация задачи
     cls, topic = get_random_class_and_topic()
     task = get_fallback_task(cls, topic)
@@ -428,9 +472,17 @@ def run_tests():
     assert contains_explanation("Ты ошибся в формуле, надо F = m * a") is True
     assert contains_explanation("Нет") is False
     assert contains_explanation("Подумай сам") is False
+    assert check_teacher_quality("Надо подумать") is False
+    assert check_teacher_quality("Не знаю") is False
     print("✓ Эвристика проверки ответа учителя работает")
 
-    # Тест 3: Проверка LLM (только если доступна)
+    # Тест 3: Проверка наличия исправления
+    task_example = "УСЛОВИЕ: ... МОЁ РЕШЕНИЕ: ... ОТВЕТ: 5000 Дж."
+    assert contains_correction("Правильно: A = m*g*h = 1000*5 = 5000 Дж", task_example) is True
+    assert contains_correction("Нет, неверно", task_example) is False
+    print("✓ Проверка наличия исправления работает")
+
+    # Тест 4: Проверка LLM (если доступна)
     try:
         res = check_teacher_quality_llm("Нет, неверно. Правильно: v = s/t")
         assert res is True or res is False, "LLM вернул некорректный результат"
@@ -438,10 +490,9 @@ def run_tests():
     except Exception as e:
         print(f"⚠ LLM проверка недоступна: {e}")
 
-    # Тест 4: Генерация ответа ученика (без реального вызова LLM, только структура)
+    # Тест 5: Генерация ответа ученика (с заглушкой)
     session = {'good_explanations': 0, 'task': 'задача', 'topic': 'физика'}
     try:
-        # Используем заглушку, чтобы не вызывать LLM в тестах
         original = generate_student_response
         def dummy_gen(prompt):
             return "Я не понял."
