@@ -250,7 +250,6 @@ def generate_initial_message():
 # ------------------------------
 @retry_on_failure(max_retries=2, delay=1)
 def check_teacher_quality_llm(message, topic):
-    """Определяет, дал ли учитель полезное объяснение (наводящий вопрос, подсказку, указание на ошибку)."""
     prompt = (
         f"Ученик спросил 'Я правильно решил?' по теме \"{topic}\". Учитель ответил: \"{message}\"\n\n"
         "Является ли ответ учителя полезным объяснением? Полезное объяснение может быть:\n"
@@ -276,7 +275,6 @@ def check_teacher_quality_llm(message, topic):
     return False
 
 def check_teacher_quality(message, topic):
-    """Обёртка для проверки полезности."""
     lower_msg = message.lower()
     invalid_phrases = [
         "надо подумать", "не знаю", "не уверен", "подумай сам",
@@ -288,11 +286,10 @@ def check_teacher_quality(message, topic):
         return check_teacher_quality_llm(message, topic)
     except Exception as e:
         logger.error(f"Ошибка LLM при оценке ответа учителя: {e}")
-        # Fallback: считаем полезным любое сообщение длиннее 10 слов
         return len(message.split()) >= 10
 
 # ------------------------------
-# Генерация ответа ученика (динамическая)
+# Генерация ответа ученика (динамическая, с исправленными ошибками)
 # ------------------------------
 @retry_on_failure(max_retries=3, delay=1, backoff=2)
 def generate_student_response(prompt):
@@ -304,19 +301,26 @@ def generate_student_response(prompt):
     )
     return response.choices[0].message.content.strip()
 
-def postprocess_response(response):
-    # Удаляем лишние префиксы
-    if response.startswith("Учитель:") or response.startswith("Я:"):
-        parts = response.split(":")
-        response = parts[-1].strip()
-    if response.startswith("("):
-        response = re.sub(r"^\([^)]*\)\s*", "", response)
-    # Обрезаем по первому переносу строки, чтобы не было длинных рассуждений
-    if "\n" in response:
-        response = response.split("\n")[0]
-    if len(response) > 400:
-        response = response[:400]
-    return response
+def clean_response(text, user_message):
+    """Удаляет из ответа повторения реплик учителя и исправляет грамматические ошибки (простые)."""
+    # Удаляем "Ответ учителя: ..." или "Учитель: ..." в начале
+    text = re.sub(r'^(Ответ учителя:|Учитель:)\s*', '', text, flags=re.IGNORECASE)
+    # Если ответ начинается с цитаты сообщения учителя (заключённой в кавычки) – удаляем
+    if re.match(r'^["\']', text):
+        text = re.sub(r'^["\'].*?["\']\s*', '', text)
+    # Убираем повторение вопроса учителя, если он полностью повторён
+    if user_message and user_message in text:
+        # Если текст целиком совпадает с user_message, заменяем на более осмысленный ответ
+        if text.strip() == user_message.strip():
+            text = "Я не совсем понял. Можете ещё раз объяснить?"
+        else:
+            text = text.replace(user_message, "").strip()
+    # Простые замены для улучшения грамматики
+    text = text.replace("depends от", "зависит от")
+    text = text.replace("на объём зависит", "от объёма зависит")
+    text = text.replace("своё место обратно", "своё место")
+    text = text.replace("называется", "называется")
+    return text
 
 def get_student_response(user_message, session):
     good_count = session.get('good_explanations', 0)
@@ -324,27 +328,21 @@ def get_student_response(user_message, session):
     task = session.get('task', '')
     history = session.get('messages', [])
     
-    # Проверяем, дал ли учитель полезное объяснение
     is_helpful = check_teacher_quality(user_message, topic)
-    
-    # Если полезное — увеличиваем счётчик, иначе оставляем как есть
     if is_helpful:
         session['good_explanations'] = good_count + 1
         good_count = session['good_explanations']
     
-    # Формируем историю диалога (последние 4 сообщения, включая текущее)
-    # Для простоты будем использовать последние 2-3 пары
+    # Формируем историю диалога (последние 6 сообщений)
     history_text = ""
     if history:
-        last_few = history[-6:]  # последние 6 сообщений (3 пары)
+        last_few = history[-6:]
         for msg in last_few:
             role = "Учитель" if msg['role'] == 'user' else "Школьник"
             history_text += f"{role}: {msg['content']}\n"
-    
-    # Добавляем текущее сообщение учителя
     history_text += f"Учитель: {user_message}\n"
     
-    # Определяем уровень понимания на основе good_count
+    # Уровень понимания
     if good_count == 0:
         understanding = "Ты только что получил задачу и сделал грубую ошибку. Ты пока не понимаешь физику, но стараешься."
     elif good_count == 1:
@@ -355,27 +353,27 @@ def get_student_response(user_message, session):
         understanding = "Учитель объяснил несколько раз. Теперь ты понял тему и можешь решить задачу правильно."
     
     prompt = (
-        f"Ты — школьник-двоечник, который пытается разобраться в физике. Тема: {topic}.\n"
+        f"Ты — школьник, который пытается разобраться в физике. Тема: {topic}.\n"
         f"Твоя задача (с твоим решением): {task}\n\n"
         f"{understanding}\n\n"
         f"Вот что происходило до этого:\n{history_text}\n"
-        f"Теперь напиши свой ответ (только одну короткую фразу или вопрос, но если нужно — можно кратко рассуждать).\n"
-        "Правила:\n"
-        "1. Не пиши длинных монологов. Максимум 1-2 предложения.\n"
-        "2. Отвечай прямо на последний вопрос учителя.\n"
-        "3. Если учитель задал наводящий вопрос — постарайся ответить, даже если ошибочно.\n"
-        "4. Если учитель указал на ошибку — поправься, но можешь ошибиться в вычислениях или единицах (в зависимости от уровня понимания).\n"
-        "5. Не используй фразу 'Объясните, пожалуйста' слишком часто — только если действительно не понял.\n"
-        "6. Твой ответ должен быть естественным для ученика, который учится."
+        "Теперь напиши свой ответ. Ты должен:\n"
+        "- Отвечать естественно, как ученик, который учится.\n"
+        "- Не повторять фразы учителя дословно.\n"
+        "- Говорить по-русски грамотно, без англицизмов.\n"
+        "- Если учитель задал вопрос — постарайся ответить, даже если ошибаешься.\n"
+        "- Если понял ошибку — исправь её, но можешь ошибиться в вычислениях или единицах (в зависимости от уровня понимания).\n"
+        "- Пиши кратко, 1-2 предложения.\n"
+        "Твой ответ:"
     )
     
     try:
         result = generate_student_response(prompt)
-        result = postprocess_response(result)
+        result = clean_response(result, user_message)
         return result
     except Exception as e:
         logger.error(f"Ошибка генерации ответа: {e}")
-        return "Я не совсем понял. Может, объясните ещё раз?"
+        return "Я не совсем понял. Можете объяснить ещё раз?"
 
 # ------------------------------
 # Flask и Telegram обработчики
@@ -429,7 +427,6 @@ def webhook():
 
         response = get_student_response(user_msg, session)
 
-        # Сохраняем историю
         session['messages'].append({'role': 'user', 'content': user_msg})
         session['messages'].append({'role': 'assistant', 'content': response})
 
@@ -469,6 +466,11 @@ def run_tests():
         print("✓ LLM распознаёт полезные объяснения")
     except Exception as e:
         print(f"⚠ LLM проверка недоступна: {e}")
+
+    # Тест 3: Проверка очистки ответа
+    cleaned = clean_response("Ответ учителя: Молодец. Так какой же ответ в задаче?", "Молодец. Так какой же ответ в задаче?")
+    assert cleaned == "Молодец. Так какой же ответ в задаче?", "Очистка не удалила 'Ответ учителя:'"
+    print("✓ Очистка ответов работает")
 
     print("Тесты завершены.")
 
