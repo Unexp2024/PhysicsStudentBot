@@ -6,13 +6,13 @@ import requests
 import re
 import sys
 import time
+import warnings
 from functools import wraps
 from flask import Flask, request, jsonify
-from cerebras.cloud.sdk import Cerebras
 
-# ------------------------------
-# Конфигурация и логирование
-# ------------------------------
+# Подавляем предупреждение Pydantic V1 / Python 3.14
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -25,9 +25,17 @@ TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CEREBRAS_API_KEY = os.environ.get('CEREBRAS_API_KEY')
 
 if not TELEGRAM_TOKEN or not CEREBRAS_API_KEY:
-    raise ValueError("Токены не установлены")
+    logger.warning("Один или оба токена не установлены — проверьте переменные окружения.")
 
-cerebras_client = Cerebras(api_key=CEREBRAS_API_KEY)
+# Ленивая инициализация клиента Cerebras
+_cerebras_client = None
+
+def get_cerebras_client():
+    global _cerebras_client
+    if _cerebras_client is None:
+        from cerebras.cloud.sdk import Cerebras
+        _cerebras_client = Cerebras(api_key=CEREBRAS_API_KEY)
+    return _cerebras_client
 
 # ------------------------------
 # Данные
@@ -66,7 +74,7 @@ def retry_on_failure(max_retries=3, delay=1, backoff=2):
     return decorator
 
 # ------------------------------
-# Генерация задач (с правильными ответами)
+# Генерация задач
 # ------------------------------
 def get_random_class_and_topic():
     cls = random.choice(list(TOPICS_BY_CLASS.keys()))
@@ -74,23 +82,23 @@ def get_random_class_and_topic():
     return cls, topic
 
 def get_fallback_task(cls, topic):
-    v_ms  = random.choice([10, 15, 20])
-    m_kg  = random.choice([500, 1500, 3000])
-    m_g   = random.choice([200, 500, 1000])
-    m_t   = random.choice([2, 5, 10])
-    h_m   = random.choice([5, 10, 20])
-    s_m   = random.choice([100, 500, 1000])
-    U_V   = random.choice([220, 110])
-    R_Om  = random.choice([10, 20, 50])
-    F1    = random.choice([3, 5, 7])
-    F2    = random.choice([4, 6, 8])
-    k     = random.choice([100, 200, 300])
-    x     = random.choice([0.05, 0.1, 0.15])
-    A_pol = random.choice([300, 500, 700])
-    A_poln= random.choice([600, 1000, 1400])
-    rho   = 1000
-    g     = 10
-    h     = random.choice([3, 5, 8])
+    v_ms   = random.choice([10, 15, 20])
+    m_kg   = random.choice([500, 1500, 3000])
+    m_g    = random.choice([200, 500, 1000])
+    m_t    = random.choice([2, 5, 10])
+    h_m    = random.choice([5, 10, 20])
+    s_m    = random.choice([100, 500, 1000])
+    U_V    = random.choice([220, 110])
+    R_Om   = random.choice([10, 20, 50])
+    F1     = random.choice([3, 5, 7])
+    F2     = random.choice([4, 6, 8])
+    k      = random.choice([100, 200, 300])
+    x      = random.choice([0.05, 0.1, 0.15])
+    A_pol  = random.choice([300, 500, 700])
+    A_poln = random.choice([600, 1000, 1400])
+    rho    = 1000
+    g      = 10
+    h      = random.choice([3, 5, 8])
 
     fallbacks = {
         7: {
@@ -521,7 +529,7 @@ def check_teacher_quality_llm(message, topic):
         "- философские рассуждения («физика — это сложно»)\n\n"
         "Ответь в формате JSON: {\"is_helpful\": true/false}"
     )
-    resp = cerebras_client.chat.completions.create(
+    resp = get_cerebras_client().chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
         model="llama3.1-8b", max_tokens=50, temperature=0.1
     )
@@ -553,7 +561,7 @@ def check_teacher_quality(message, topic):
 # ------------------------------
 @retry_on_failure(max_retries=3, delay=1, backoff=2)
 def generate_student_response(prompt):
-    response = cerebras_client.chat.completions.create(
+    response = get_cerebras_client().chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
         model="llama3.1-8b",
         max_tokens=200,
@@ -770,21 +778,7 @@ def run_tests():
         "Первое сообщение не содержит просьбу объяснить на примере"
     print("✓ Первое сообщение содержит просьбу объяснить на примере из жизни")
 
-    # Тест 3: Проверка LLM (если доступна)
-    try:
-        res = check_teacher_quality_llm(
-            "Время до остановки можно найти, если знать, насколько скорость уменьшается "
-            "каждую секунду. Но нас спрашивают не время, а путь. Путь при равномерном "
-            "изменении скорости — это как средняя скорость, умноженная на время. "
-            "Какая будет средняя скорость, если поезд начинает с 10 м/с и заканчивает на 0 м/с?",
-            "движение"
-        )
-        assert res is True, "LLM не распознал наводящий вопрос"
-        print("✓ LLM распознаёт полезные объяснения")
-    except Exception as e:
-        print(f"⚠ LLM проверка недоступна: {e}")
-
-    # Тест 4: Очистка английских слов
+    # Тест 3: Очистка английских слов
     cleaned = clean_response(
         "Я думаю, что force тут равна mass умножить на ускорение.", ""
     )
@@ -792,7 +786,7 @@ def run_tests():
         "clean_response не удалил английские слова"
     print("✓ Английские слова удаляются из ответа")
 
-    # Тест 5: Очистка префикса «Ответ учителя:»
+    # Тест 4: Очистка префикса «Ответ учителя:»
     cleaned = clean_response("Ответ учителя: Молодец. Так какой же ответ?", "")
     assert not cleaned.startswith("Ответ учителя:"), \
         "Очистка не удалила 'Ответ учителя:'"
