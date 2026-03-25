@@ -1,21 +1,13 @@
 import os
-import json
 import random
 import logging
 import requests
 import re
-import time
 from functools import wraps
 from flask import Flask, request, jsonify
 from cerebras.cloud.sdk import Cerebras
 
-# ------------------------------
-# Конфигурация
-# ------------------------------
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -63,7 +55,7 @@ TOPICS_BY_CLASS = {
 user_sessions = {}
 
 # ------------------------------
-# Генерация задач (теперь задачи соответствуют теме!)
+# Генерация задач — теперь строго по теме!
 # ------------------------------
 def get_random_class_and_topic():
     cls = random.choice(list(TOPICS_BY_CLASS.keys()))
@@ -71,27 +63,27 @@ def get_random_class_and_topic():
     return cls, topic
 
 def get_fallback_task(cls, topic):
-    # Общие случайные значения
-    m_kg = random.choice([0.5, 1, 2, 5])
-    delta_t = random.choice([20, 40, 60, 80])
-    c_water = 4200
-    Q_given = random.choice([500, 800, 1200])
-    A_given = random.choice([200, 300, 500])
+    m = random.choice([100, 500, 1000])
+    r = random.choice([6.4e6, 6.37e6])
+    g = 10
+    Q = random.choice([800, 1200, 2000])
+    A = random.choice([200, 300, 500])
 
-    fallbacks = {
-        8: {
-            "работа и мощность": f"УСЛОВИЕ: Кран поднимает бетонную плиту массой 2 т на высоту 10 м. Какую работу совершает кран? Ускорение свободного падения g = 10 Н/кг.\nМОЁ РЕШЕНИЕ:\n1) A — работа, F — сила, s — высота.\n2) F = m = 2 (просто масса). s = 10.\n3) A = 2 * 10 = 20 Дж.\nОТВЕТ: 20 Дж."
-        },
-        11: {
-            "термодинамика": f"УСЛОВИЕ: Газ совершил работу {A_given} Дж, получив от нагревателя {Q_given} Дж теплоты. Найдите изменение внутренней энергии газа.\nМОЁ РЕШЕНИЕ:\n1) ΔU — изменение внутренней энергии, A — работа, Q — теплота.\n2) ΔU = A + Q.\n3) ΔU = {A_given} + {Q_given} = {A_given + Q_given} Дж.\nОТВЕТ: {A_given + Q_given} Дж."
-        },
-        7: {
-            "плотность": f"УСЛОВИЕ: Металлическая деталь имеет массу 800 г и объём 200 см³. Определите плотность металла.\nМОЁ РЕШЕНИЕ:\n1) ρ — плотность, m — масса, V — объём.\n2) ρ = m + V.\n3) ρ = 800 + 200 = 1000 г/см³.\nОТВЕТ: 1000 г/см³."
-        }
+    tasks = {
+        # 10 класс — тяготение
+        "тяготение": f"УСЛОВИЕ: Масса Земли 6·10²⁴ кг, радиус 6400 км. Найдите ускорение свободного падения на поверхности Земли. G = 6,67·10⁻¹¹ Н·м²/кг².\n"
+                     f"МОЁ РЕШЕНИЕ:\n1) g — ускорение свободного падения.\n2) g = G * M.\n3) g = 6,67e-11 * 6e24 = очень большое число.\nОТВЕТ: очень большое число.",
+
+        # 11 класс — термодинамика
+        "термодинамика": f"УСЛОВИЕ: Газ совершил работу {A} Дж, получив от нагревателя {Q} Дж теплоты. Найдите изменение внутренней энергии газа.\n"
+                         f"МОЁ РЕШЕНИЕ:\n1) ΔU — изменение внутренней энергии, A — работа, Q — теплота.\n2) ΔU = A + Q.\n3) ΔU = {A} + {Q} = {A+Q} Дж.\nОТВЕТ: {A+Q} Дж.",
+
+        # Остальные темы (можно расширять)
+        "работа и мощность": f"УСЛОВИЕ: Кран поднимает бетонную плиту массой 2 т на высоту 10 м. Какую работу совершает кран? g = 10 Н/кг.\n"
+                             f"МОЁ РЕШЕНИЕ:\n1) A — работа.\n2) F = m = 2. s = 10.\n3) A = 2 * 10 = 20 Дж.\nОТВЕТ: 20 Дж.",
     }
 
-    # Возвращаем задачу по теме, если есть, иначе дефолтную
-    return fallbacks.get(cls, {}).get(topic, fallbacks[11]["термодинамика"])
+    return tasks.get(topic, tasks["термодинамика"])
 
 def generate_initial_message():
     cls, topic = get_random_class_and_topic()
@@ -103,26 +95,25 @@ def generate_initial_message():
     return welcome, cls, topic, task
 
 # ------------------------------
-# Проверка качества учителя
+# Проверка учителя
 # ------------------------------
 def check_teacher_quality(message):
     lower = message.lower()
-    if any(word in lower for word in ["надо подумать", "не знаю", "подумай сам", "не уверен"]):
+    bad = ["надо подумать", "не знаю", "подумай сам", "не уверен"]
+    if any(x in lower for x in bad):
         return False
-    return len(message.split()) >= 12
+    return len(message.split()) >= 10
 
 # ------------------------------
-# Очистка ответа
+# Очистка
 # ------------------------------
 def clean_response(text):
     text = re.sub(r'^(Ответ учителя:|Учитель:)\s*', '', text, flags=re.I)
     text = re.sub(r'\s+', ' ', text).strip()
-    if len(text) > 250:
-        text = text[:250] + "..."
-    return text
+    return text[:260] + "..." if len(text) > 260 else text
 
 # ------------------------------
-# Ответ школьника
+# Ответ бота
 # ------------------------------
 @retry_on_failure(max_retries=3, delay=1, backoff=2)
 def generate_student_response(prompt):
@@ -130,7 +121,7 @@ def generate_student_response(prompt):
         messages=[{"role": "user", "content": prompt}],
         model="llama3.1-8b",
         max_tokens=130,
-        temperature=0.5
+        temperature=0.52
     )
     return resp.choices[0].message.content.strip()
 
@@ -140,57 +131,43 @@ def get_student_response(user_message, session):
     task = session.get('task', '')
     history = session.get('messages', [])
 
-    is_helpful = check_teacher_quality(user_message)
-    if is_helpful:
+    if check_teacher_quality(user_message):
         session['good_explanations'] = good_count + 1
         good_count = session['good_explanations']
 
     history_text = "\n".join([f"Учитель: {m['content']}" if m['role'] == 'user' else f"Я: {m['content']}" for m in history[-6:]])
 
-    if good_count == 0:
-        level = "Ты только что показал своё неверное решение. Ты пока совсем не понимаешь тему."
-    elif good_count == 1:
-        level = "Учитель дал первую подсказку с примером из жизни. Ты начинаешь догадываться, но пока не знаешь формулы."
-    elif good_count == 2:
-        level = "Учитель объяснил уже два раза. Ты понимаешь смысл, но ещё не должен выводить готовые формулы."
-    else:
-        level = "Теперь ты должен решить задачу правильно."
+    level = {
+        0: "Ты только что показал неверное решение. Ты пока совсем не понимаешь тему.",
+        1: "Учитель дал первую подсказку с примером. Ты начинаешь догадываться.",
+        2: "Учитель объяснил дважды. Ты понимаешь смысл, но пока не должен писать формулы.",
+    }.get(good_count, "Теперь ты должен решить правильно.")
 
-    prompt = f"""Ты — слабый ученик 8-9 класса по физике. Тема: {topic}.
+    prompt = f"""Ты — слабый школьник 9-10 класса. Тема: {topic}.
 
-Задача и твоё неверное решение:
+Задача:
 {task}
 
-Текущий уровень понимания:
 {level}
 
 Диалог:
 {history_text}
 
-Последнее сообщение учителя: "{user_message}"
+Учитель только что сказал: "{user_message}"
 
-Правила ответа:
-- Отвечай коротко, 1-2 простых предложения.
-- Говори как обычный школьник.
-- НЕ используй формулы (типа ΔU = Q - A, A = mgh и т.д.), пока учитель не объяснил 3 раза.
-- Не решай задачу полностью.
-- Просто отвечай на вопрос учителя или проси уточнить."""
+Отвечай коротко (1-2 предложения), как обычный школьник.
+НЕ пиши формулы и НЕ решай задачу полностью, если учитель объяснил меньше 3 раз.
+Просто отвечай на его вопрос или проси уточнить."""
 
     try:
         result = generate_student_response(prompt)
         result = clean_response(result)
-        
-        # Дополнительная защита от раннего решения
-        if good_count < 2 and any(kw in result.lower() for kw in ["формула", "δu =", "q - a", "работа =", "внутренняя энергия"]):
-            result = "Я понял про тепло и работу... но как правильно посчитать изменение внутренней энергии?"
-            
         return result
-    except Exception as e:
-        logger.error(f"Ошибка генерации: {e}")
+    except:
         return "Я запутался... Объясните ещё раз, пожалуйста?"
 
 # ------------------------------
-# Flask
+# Webhook
 # ------------------------------
 @app.route('/')
 def index():
